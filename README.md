@@ -22,6 +22,12 @@
 
 </div>
 
+> [!IMPORTANT]
+> ### 📱 Get the CheatLock Android App
+> * 📥 **[Download Android APK (Direct Link)](cheatlock.apk)** – Get the secure exam kiosk app directly from this repository.
+> * 🌐 **[Download via Official Website](https://cheatlock.netlify.app/)** – Access the landing page for app setup instructions, guides, and pricing.
+
+
 ## 📌 Table of Contents
 
 - [✨ Overview](#-overview)
@@ -197,6 +203,12 @@ npm run dev
 
 ### 3. Android App Setup
 
+#### 🚀 Quick Start (Install Pre-built APK)
+If you just want to run the application, you can download the pre-compiled APK directly:
+* 📥 **[Download Pre-built APK](cheatlock.apk)**
+* 🌐 **[Download from CheatLock Website](https://cheatlock.netlify.app/)**
+
+#### 🛠️ Build from Source
 1. Open **Android Studio**.
 2. Select **Open** and choose the `app` or root `cheatLock_App` directory.
 3. Allow Gradle to sync dependencies (`Jetpack Compose`, `ML Kit`, `Socket.IO Client`, `CameraX`).
