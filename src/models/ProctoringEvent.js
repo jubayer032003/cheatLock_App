@@ -60,6 +60,8 @@ const proctoringEventSchema = new mongoose.Schema(
 );
 
 proctoringEventSchema.index({ examId: 1, studentId: 1, createdAt: 1 });
+// TTL index: automatically deletes document after 30 days (2592000 seconds)
+proctoringEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000 });
 
 export const ProctoringEvent = mongoose.model("ProctoringEvent", proctoringEventSchema);
 

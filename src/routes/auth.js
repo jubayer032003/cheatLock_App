@@ -140,6 +140,22 @@ authRouter.post("/login", async (req, res, next) => {
   }
 });
 
+authRouter.get("/me", requireAuth, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.sub).lean();
+    if (!user) {
+      const error = new Error("Account no longer exists.");
+      error.status = 404;
+      throw error;
+    }
+    res.json({
+      user: serializeUser(user),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 authRouter.get(
   "/face-profile",
   requireAuth,

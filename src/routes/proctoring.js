@@ -13,6 +13,7 @@ proctoringRouter.post(
   requireRole("STUDENT"),
   async (req, res, next) => {
     try {
+      console.log(`[Step 8] Backend: Received event: ${req.body?.eventName} from student: ${req.user?.identifier}. Payload size: ${JSON.stringify(req.body).length}. Time: ${Date.now()}`);
       const eventName = String(req.body?.eventName || "").trim();
       if (!isStudentProctoringEvent(eventName)) {
         const error = new Error("Unsupported proctoring event.");

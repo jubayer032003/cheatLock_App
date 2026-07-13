@@ -71,5 +71,7 @@ const examSessionSchema = new mongoose.Schema(
 examSessionSchema.index({ studentId: 1, examId: 1 }, { unique: true });
 examSessionSchema.index({ examId: 1, status: 1 });
 examSessionSchema.index({ status: 1 });
+// Compound index for live proctoring dashboard list query & sort optimizations
+examSessionSchema.index({ examId: 1, status: 1, onlineStatus: -1, suspicionScore: -1, updatedAt: -1 });
 
 export const ExamSession = mongoose.model("ExamSession", examSessionSchema);

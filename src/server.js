@@ -16,8 +16,14 @@ import { sessionsRouter } from "./routes/sessions.js";
 import { submissionsRouter } from "./routes/submissions.js";
 import { teacherRouter } from "./routes/teacher.js";
 import { studentsRouter } from "./routes/students.js";
+import { tenantsRouter } from "./routes/tenants.js";
+import { scimRouter } from "./routes/scim.js";
+import { ltiRouter } from "./routes/lti.js";
+import { publicApiRouter } from "./routes/publicApi.js";
 import { Server } from "socket.io";
 import { configureProctoringSocket } from "./socket/proctoring.js";
+import { rateLimiter } from "./middleware/rateLimiter.js";
+import { logger } from "./services/logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(__dirname, "../.env"), override: false });
@@ -37,16 +43,23 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || "*")
   .split(",")
   .map((origin) => origin.trim());
 
-app.use(helmet());
-app.use(express.json({ limit: "3mb" }));
 app.use(
   cors({
     origin: allowedOrigins.includes("*") ? true : allowedOrigins,
   })
 );
+app.use(helmet());
+app.use(rateLimiter);
+app.use(express.json({ limit: "3mb" }));
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "cheatlock-backend" });
+  const dbStatus = mongoose.connection.readyState === 1 ? "CONNECTED" : "DISCONNECTED";
+  res.json({
+    ok: true,
+    service: "cheatlock-backend",
+    database: dbStatus,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.use("/auth", authRouter);
@@ -58,6 +71,10 @@ app.use("/sessions", sessionsRouter);
 app.use("/submissions", submissionsRouter);
 app.use("/teacher", teacherRouter);
 app.use("/students", studentsRouter);
+app.use("/tenants", tenantsRouter);
+app.use("/scim", scimRouter);
+app.use("/lti", ltiRouter);
+app.use("/public", publicApiRouter);
 
 const io = new Server(server, {
   cors: {
@@ -94,20 +111,12 @@ await mongoose.connect(process.env.MONGODB_URI, {
     dbName: process.env.MONGODB_DB_NAME || "cheatlock",
   });
 
-  console.log(`MongoDB connected successfully. Database: ${mongoose.connection.name}`);
+  logger.info(`MongoDB connected successfully. Database: ${mongoose.connection.name}`);
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(`CheatLock backend running on http://localhost:${port}`);
+    logger.info(`CheatLock backend running on http://localhost:${port}`);
   });
 } catch (error) {
-  console.error("Failed to connect to MongoDB.");
-  console.error(error.message);
-
-  if (error.message.includes("querySrv")) {
-    console.error(
-      "Your MongoDB URI uses mongodb+srv, which requires DNS SRV lookups. Try another network, change DNS to 1.1.1.1 or 8.8.8.8, or use Atlas's standard mongodb:// connection string."
-    );
-  }
-
+  logger.critical(`Failed to connect to MongoDB: ${error.message}`);
   process.exit(1);
 }

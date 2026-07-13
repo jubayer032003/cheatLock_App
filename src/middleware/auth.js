@@ -32,9 +32,33 @@ export function requireAuth(req, _res, next) {
   }
 }
 
+const ROLE_PERMISSIONS = {
+  SUPER_ADMIN: ["manage_tenants", "view_audit_logs", "manage_settings", "manage_users", "manage_exams"],
+  INSTITUTION_ADMIN: ["view_audit_logs", "manage_settings", "manage_users", "manage_exams", "manage_courses"],
+  DEPARTMENT_ADMIN: ["manage_users", "manage_exams", "manage_courses"],
+  TEACHER: ["manage_exams", "manage_courses", "view_reports", "proctor_exams"],
+  PROCTOR: ["proctor_exams", "view_reports"],
+  STUDENT: ["take_exams"],
+  OBSERVER: ["view_reports"],
+  AUDITOR: ["view_audit_logs", "view_reports"]
+};
+
 export function requireRole(role) {
   return (req, _res, next) => {
-    if (req.user?.role !== role) {
+    if (!req.user) {
+      const error = new Error("Authentication required.");
+      error.status = 401;
+      next(error);
+      return;
+    }
+
+    if (req.user.role === "SUPER_ADMIN" || req.user.role === "INSTITUTION_ADMIN") {
+      next();
+      return;
+    }
+
+    const allowedRoles = Array.isArray(role) ? role : [role];
+    if (!allowedRoles.includes(req.user.role)) {
       const error = new Error("You do not have permission for this action.");
       error.status = 403;
       next(error);
@@ -42,5 +66,26 @@ export function requireRole(role) {
     }
 
     next();
+  };
+}
+
+export function requirePermission(permission) {
+  return (req, _res, next) => {
+    if (!req.user) {
+      const error = new Error("Authentication required.");
+      error.status = 401;
+      next(error);
+      return;
+    }
+
+    const permissions = ROLE_PERMISSIONS[req.user.role] || [];
+    if (req.user.role === "SUPER_ADMIN" || permissions.includes(permission)) {
+      next();
+      return;
+    }
+
+    const error = new Error("Insufficient permissions to perform this action.");
+    error.status = 403;
+    next(error);
   };
 }
