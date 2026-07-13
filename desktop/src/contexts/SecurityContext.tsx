@@ -35,6 +35,7 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
   const examIdRef = useRef<string | null>(null);
   const violationsRef = useRef<SecurityViolation[]>([]);
   const securityIntervalRef = useRef<any>(null);
+  const unlistenFullscreenRef = useRef<(() => void) | null>(null);
 
   // Keep ref in sync so callbacks can access latest arrays without state re-binding
   useEffect(() => {
@@ -82,7 +83,23 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
         console.warn("[Security] Window kiosk enforcement failed:", err);
       }
     } else {
-      console.warn("[Security] Tauri unavailable: skipping kiosk enforcement.");
+      console.warn("[Security] Tauri unavailable: requesting HTML5 browser fullscreen.");
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch((err) => {
+          console.warn("[Security] Browser fullscreen request rejected:", err);
+        });
+      }
+
+      const handleFullscreenChange = () => {
+        if (!document.fullscreenElement) {
+          handleViolation("FULLSCREEN_EXIT", "Candidate exited fullscreen exam window.");
+        }
+      };
+
+      document.addEventListener("fullscreenchange", handleFullscreenChange);
+      unlistenFullscreenRef.current = () => {
+        document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      };
     }
 
     // 2. Listen for native window focus shifts from the Tauri backend (or browser tab focus loss)
@@ -181,7 +198,17 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
         console.warn("[Security] Window kiosk deactivation failed:", err);
       }
     } else {
-      console.warn("[Security] Tauri unavailable: skipping kiosk cleanup.");
+      console.warn("[Security] Tauri unavailable: exiting HTML5 browser fullscreen.");
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch((err) => {
+          console.warn("[Security] Browser exitFullscreen failed:", err);
+        });
+      }
+
+      if (unlistenFullscreenRef.current) {
+        unlistenFullscreenRef.current();
+        unlistenFullscreenRef.current = null;
+      }
     }
 
     // 2. Unsubscribe from focus listeners
