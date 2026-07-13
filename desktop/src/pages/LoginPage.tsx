@@ -5,7 +5,7 @@ import { useToast } from "../hooks/useToast";
 import { Button } from "../components/Button";
 import { Input } from "../components/Input";
 import { Card } from "../components/Card";
-import { ShieldCheck, Settings, Server, Eye, EyeOff, UserPlus, LogIn, Lock } from "lucide-react";
+import { ShieldCheck, Settings, Server, Eye, EyeOff, UserPlus, LogIn, Lock, Activity } from "lucide-react";
 import { invoke, isTauriAvailable } from "../utils/tauri";
 import { motion, AnimatePresence } from "framer-motion";
 import { pageVariants } from "../motion/variants";
@@ -131,22 +131,69 @@ export function LoginPage() {
       exit="exit"
       className="h-screen w-screen flex flex-col items-center justify-center bg-surface-base px-4 select-none relative overflow-hidden"
     >
+      {/* ---------- 3D Grid Background & Blobs ---------- */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
+        <div className="absolute top-[10%] left-[5%] w-72 h-72 rounded-full bg-accent/10 blur-[80px] animate-pulse" />
+        <div className="absolute bottom-[10%] right-[5%] w-96 h-96 rounded-full bg-blue-500/10 blur-[100px] animate-pulse" />
+      </div>
+
+      {/* ---------- Floating Background Particles ---------- */}
+      <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+        {[...Array(15)].map((_, i) => (
+          <motion.div
+            key={i}
+            className="absolute rounded-full bg-accent/20"
+            initial={{ y: "110vh", x: `${Math.random() * 100}vw` }}
+            animate={{
+              y: "-10vh",
+              x: [
+                `${Math.random() * 100}vw`,
+                `${Math.random() * 100 + (Math.random() - 0.5) * 15}vw`,
+                `${Math.random() * 100 + (Math.random() - 0.5) * 15}vw`,
+              ]
+            }}
+            transition={{
+              duration: 20 + Math.random() * 15,
+              repeat: Infinity,
+              ease: "linear",
+              delay: Math.random() * -20, // Negative delay so some start mid-screen
+            }}
+            style={{
+              width: `${3 + Math.random() * 5}px`,
+              height: `${3 + Math.random() * 5}px`,
+              filter: "blur(1px)",
+            }}
+          />
+        ))}
+      </div>
+
       <div className="w-full max-w-[400px] flex flex-col gap-6 z-10">
         {/* Hero Branding */}
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="h-12 w-12 rounded-xl bg-accent/10 flex items-center justify-center text-accent border border-accent/20">
-            <ShieldCheck size={28} strokeWidth={2} />
-          </div>
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+          className="flex flex-col items-center gap-4 text-center select-none"
+        >
+          <motion.div 
+            animate={{ 
+              boxShadow: ["0 0 0px rgba(124, 58, 237, 0)", "0 0 20px rgba(124, 58, 237, 0.3)", "0 0 0px rgba(124, 58, 237, 0)"] 
+            }}
+            transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+            className="h-14 w-14 rounded-2xl bg-accent/15 flex items-center justify-center text-accent border border-accent/30 shadow-lg"
+          >
+            <ShieldCheck size={32} strokeWidth={1.5} className="text-accent" />
+          </motion.div>
 
           <div>
-            <h1 className="text-xl font-semibold tracking-tight text-zinc-50 font-sans">
+            <h1 className="text-2xl font-bold tracking-tight text-zinc-50 font-sans bg-clip-text bg-gradient-to-r from-zinc-50 via-zinc-200 to-zinc-400">
               CheatLock
             </h1>
-            <p className="text-sm text-zinc-500 mt-1 font-sans">
-              Secure assessment platform
+            <p className="text-xs font-medium tracking-wider text-accent/80 mt-1 font-mono uppercase">
+              STUDENT LOCKDOWN CLIENT
             </p>
           </div>
-        </div>
+        </motion.div>
 
         {/* Auth Card */}
         <Card className="relative overflow-hidden bg-surface-raised border border-border p-6 rounded-xl">
@@ -288,10 +335,25 @@ export function LoginPage() {
                         </label>
                       </div>
 
-                      <Button type="submit" isLoading={isLoading} className="w-full mt-1 gap-2">
-                        <Lock size={14} />
-                        Initialize Secure Session
-                      </Button>
+                      <motion.button
+                        type="submit"
+                        disabled={isLoading}
+                        whileTap={{ scale: 0.98 }}
+                        className={`relative w-full mt-1 px-4 py-2.5 rounded-lg font-semibold flex items-center justify-center gap-2 select-none disabled:opacity-90 text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent bg-accent hover:bg-accent/90 text-white shadow-md ${
+                          isLoading ? "cursor-wait" : "hover:shadow-lg hover:shadow-accent/25"
+                        }`}
+                      >
+                        <span className={`flex items-center justify-center gap-1.5 transition-opacity duration-200 ${isLoading ? "opacity-0" : "opacity-100"}`}>
+                          <Lock size={14} />
+                          Initialize Secure Session
+                        </span>
+                        {isLoading && (
+                          <span className="absolute inset-0 flex items-center justify-center bg-accent rounded-lg">
+                            <Activity size={16} className="animate-spin text-white" />
+                            <span className="ml-2 text-sm font-semibold text-white">Verifying Credentials...</span>
+                          </span>
+                        )}
+                      </motion.button>
 
                       <p className="text-center text-xs text-zinc-500">
                         Don't have an account?{" "}
@@ -353,10 +415,25 @@ export function LoginPage() {
                         disabled={isLoading}
                       />
 
-                      <Button type="submit" isLoading={isLoading} className="w-full mt-1 gap-2">
-                        <UserPlus size={14} />
-                        Create Student Account
-                      </Button>
+                      <motion.button
+                        type="submit"
+                        disabled={isLoading}
+                        whileTap={{ scale: 0.98 }}
+                        className={`relative w-full mt-1 px-4 py-2.5 rounded-lg font-semibold flex items-center justify-center gap-2 select-none disabled:opacity-90 text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent bg-accent hover:bg-accent/90 text-white shadow-md ${
+                          isLoading ? "cursor-wait" : "hover:shadow-lg hover:shadow-accent/25"
+                        }`}
+                      >
+                        <span className={`flex items-center justify-center gap-1.5 transition-opacity duration-200 ${isLoading ? "opacity-0" : "opacity-100"}`}>
+                          <UserPlus size={14} />
+                          Create Student Account
+                        </span>
+                        {isLoading && (
+                          <span className="absolute inset-0 flex items-center justify-center bg-accent rounded-lg">
+                            <Activity size={16} className="animate-spin text-white" />
+                            <span className="ml-2 text-sm font-semibold text-white">Creating Account...</span>
+                          </span>
+                        )}
+                      </motion.button>
 
                       <p className="text-center text-xs text-zinc-500">
                         Already have an account?{" "}
