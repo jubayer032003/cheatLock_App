@@ -31,6 +31,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
+import com.google.mlkit.vision.face.Face
+import com.jubayer.cheatlock.liveness.LivenessViewModel
+import com.jubayer.cheatlock.liveness.LivenessStatus
+import com.jubayer.cheatlock.liveness.LivenessAction
+import com.jubayer.cheatlock.liveness.LivenessState
+import androidx.compose.ui.draw.scale
 import com.jubayer.cheatlock.model.*
 import com.jubayer.cheatlock.ui.theme.*
 import kotlinx.coroutines.delay
@@ -70,6 +76,59 @@ fun StudentDashboardScreen(
     var showInstructions by remember { mutableStateOf(false) }
     var cameraActive by remember { mutableStateOf(true) }
     val isExamLive = selectedExam?.status == ExamStatus.LIVE
+
+    val livenessViewModel = remember { LivenessViewModel() }
+    val livenessState by livenessViewModel.state
+
+    LaunchedEffect(livenessState.status) {
+        val currentStatus = livenessState.status
+        if (currentStatus is LivenessStatus.Success && !faceReady && !faceLoading) {
+            if (faceDescriptor.isNotEmpty()) {
+                faceLoading = true
+                runCatching {
+                    if (onHasFaceProfile()) {
+                        if (!onVerifyFace(faceDescriptor)) error("Biometric mismatch. Try again.")
+                    } else {
+                        onEnrollFace(faceDescriptor, faceSnapshot)
+                    }
+                    faceReady = true
+                }.onFailure { err ->
+                    message = err.message
+                    livenessViewModel.resetAll()
+                }
+                faceLoading = false
+            } else {
+                message = "Liveness verified. Capturing biometric profile..."
+                var attempts = 0
+                while (faceDescriptor.isEmpty() && attempts < 10) {
+                    delay(200)
+                    attempts++
+                }
+                if (faceDescriptor.isNotEmpty()) {
+                    faceLoading = true
+                    runCatching {
+                        if (onHasFaceProfile()) {
+                            if (!onVerifyFace(faceDescriptor)) error("Biometric mismatch. Try again.")
+                        } else {
+                            onEnrollFace(faceDescriptor, faceSnapshot)
+                        }
+                        faceReady = true
+                    }.onFailure { err ->
+                        message = err.message
+                        livenessViewModel.resetAll()
+                    }
+                    faceLoading = false
+                } else {
+                    message = "Capture timeout. Try again."
+                    livenessViewModel.resetAll()
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(selectedExam?.id) {
+        livenessViewModel.resetAll()
+    }
 
     // Auto-refresh enrollment status if pending
     LaunchedEffect(enrollmentStatus, lastEnrolledClassId) {
@@ -247,25 +306,20 @@ fun StudentDashboardScreen(
                         faceStatus = faceStatus,
                         faceLoading = faceLoading,
                         faceReady = faceReady,
+                        livenessState = livenessState,
                         onFaceStatusChanged = { faceStatus = it },
                         onPreviewSnapshot = { faceSnapshot = it },
                         onFaceDescriptorChanged = { faceDescriptor = it },
-                        onVerify = {
-                            if (faceDescriptor.isNotEmpty()) {
-                                faceLoading = true
-                                scope.launch {
-                                    runCatching {
-                                        if (onHasFaceProfile()) {
-                                            if (!onVerifyFace(faceDescriptor)) error("Biometric mismatch. Try again.")
-                                        } else {
-                                            onEnrollFace(faceDescriptor, faceSnapshot)
-                                        }
-                                        faceReady = true
-                                    }.onFailure { message = it.message }
-                                    faceLoading = false
-                                }
-                            }
-                        }
+                        onFaceDetected = { face ->
+                            livenessViewModel.onFaceFrameReceived(face)
+                        },
+                        onStartLiveness = {
+                            livenessViewModel.startChallenge()
+                        },
+                        onResetLiveness = {
+                            livenessViewModel.resetAll()
+                        },
+                        onVerify = {}
                     )
                     var isStartingSession by remember { mutableStateOf(false) }
                     GradientPrimaryButton(
@@ -465,15 +519,20 @@ private fun FaceVerificationCard(
     faceStatus: FaceStatus,
     faceLoading: Boolean,
     faceReady: Boolean,
+    livenessState: com.jubayer.cheatlock.liveness.LivenessState,
     onFaceStatusChanged: (FaceStatus) -> Unit,
     onPreviewSnapshot: (String) -> Unit,
     onFaceDescriptorChanged: (List<Double>) -> Unit,
+    onFaceDetected: (Face) -> Unit,
+    onStartLiveness: () -> Unit,
+    onResetLiveness: () -> Unit,
     onVerify: () -> Unit
 ) {
     // Keep callbacks stable to avoid CameraPreview resets
     val currentStatusChanged by rememberUpdatedState(onFaceStatusChanged)
     val currentSnapshot by rememberUpdatedState(onPreviewSnapshot)
     val currentDescriptorChanged by rememberUpdatedState(onFaceDescriptorChanged)
+    val currentFaceDetected by rememberUpdatedState(onFaceDetected)
 
     PremiumCard {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -485,15 +544,175 @@ private fun FaceVerificationCard(
                         CameraPreview(
                             onFaceStatusChanged = currentStatusChanged, 
                             onPreviewSnapshot = currentSnapshot, 
-                            onFaceDescriptorChanged = currentDescriptorChanged
+                            onFaceDescriptorChanged = currentDescriptorChanged,
+                            onFaceDetected = currentFaceDetected
                         )
                     }
                 }
+                
+                // Base biometric HUD circle overlay
                 BiometricHUDOverlay(faceStatus, faceReady)
+
+                // Liveness Challenge Active HUD Overlay
+                if (livenessState.status is LivenessStatus.InProgress) {
+                    val currentAction = livenessState.actions.getOrNull(livenessState.currentActionIndex)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.7f))
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Step ${livenessState.currentActionIndex + 1}/${livenessState.actions.size}",
+                                color = CheatLockPurpleSoft,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                text = "${livenessState.timeLeftSeconds}s remaining",
+                                color = if (livenessState.timeLeftSeconds <= 3) CheatLockDanger else Color.White,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 14.sp
+                            )
+                        }
+
+                        val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                        val scale by infiniteTransition.animateFloat(
+                            initialValue = 0.95f, targetValue = 1.05f,
+                            animationSpec = infiniteRepeatable(tween(1000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                            label = "scale"
+                        )
+
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = when (currentAction) {
+                                    LivenessAction.BLINK -> Icons.Default.Visibility
+                                    LivenessAction.SMILE -> Icons.Default.SentimentSatisfiedAlt
+                                    LivenessAction.TURN_LEFT -> Icons.Default.ArrowBack
+                                    LivenessAction.TURN_RIGHT -> Icons.Default.ArrowForward
+                                    LivenessAction.LOOK_UP -> Icons.Default.ArrowUpward
+                                    LivenessAction.LOOK_DOWN -> Icons.Default.ArrowDownward
+                                    else -> Icons.Default.Face
+                                },
+                                contentDescription = null,
+                                tint = CheatLockPurpleVibrant,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Text(
+                                text = currentAction?.instruction?.uppercase() ?: "",
+                                color = Color.White,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 18.sp,
+                                modifier = Modifier.scale(scale)
+                            )
+                        }
+
+                        LinearProgressIndicator(
+                            progress = { (livenessState.currentActionIndex.toFloat() / livenessState.actions.size) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = CheatLockPurpleVibrant,
+                            trackColor = Color.White.copy(alpha = 0.2f),
+                        )
+                    }
+                }
+
+                // Liveness Failed (Retry available) HUD Overlay
+                if (livenessState.status is LivenessStatus.FailedRetry) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.85f))
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.Refresh, null, tint = CheatLockWarning, modifier = Modifier.size(48.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text("CHALLENGE FAILED", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = if (livenessState.cooldownSeconds > 0) 
+                                "Retry available in ${livenessState.cooldownSeconds}s" 
+                            else 
+                                "Tap below to start Attempt 2",
+                            color = CheatLockTextSecondaryDark,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                // Liveness Failed (Final Lockout) HUD Overlay
+                if (livenessState.status is LivenessStatus.FailedFinal) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.9f))
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.Lock, null, tint = CheatLockDanger, modifier = Modifier.size(48.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text("AUTHENTICATION DENIED", color = CheatLockDanger, fontWeight = FontWeight.Black, fontSize = 16.sp)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "Liveness verification failed both attempts.",
+                            color = CheatLockTextSecondaryDark,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                // Liveness Success HUD Overlay
+                if (livenessState.status is LivenessStatus.Success) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.7f))
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.CheckCircle, null, tint = CheatLockSuccess, modifier = Modifier.size(48.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text("LIVENESS VERIFIED", color = CheatLockSuccess, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
+                }
             }
-            Button(onClick = onVerify, enabled = !faceReady, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+            Button(
+                onClick = {
+                    if (livenessState.status is LivenessStatus.FailedRetry && livenessState.cooldownSeconds == 0) {
+                        onStartLiveness()
+                    } else if (livenessState.status is LivenessStatus.Idle) {
+                        onStartLiveness()
+                    }
+                },
+                enabled = !faceReady && (livenessState.status is LivenessStatus.Idle || (livenessState.status is LivenessStatus.FailedRetry && livenessState.cooldownSeconds == 0)),
+                modifier = Modifier.fillMaxWidth().height(52.dp)
+            ) {
                 if (faceLoading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
-                else Text(if (faceReady) "IDENTITY VERIFIED" else "VERIFY IDENTITY")
+                else Text(
+                    text = when (livenessState.status) {
+                        LivenessStatus.Idle -> "VERIFY IDENTITY"
+                        LivenessStatus.InProgress -> "VERIFYING LIVENESS..."
+                        LivenessStatus.Success -> "IDENTITY VERIFIED"
+                        LivenessStatus.FailedRetry -> if (livenessState.cooldownSeconds > 0) "COOLDOWN..." else "RETRY VERIFICATION"
+                        LivenessStatus.FailedFinal -> "ACCESS DENIED"
+                    }
+                )
             }
         }
     }

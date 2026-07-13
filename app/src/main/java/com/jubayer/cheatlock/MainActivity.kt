@@ -802,7 +802,7 @@ class MainActivity : FragmentActivity() {
                         onCameraPreviewChanged = { snapshot ->
                             sendPreviewSnapshot(snapshot)
                         },
-                        onPhoneDetected = {
+                        onPhoneDetected = { labels ->
                             phoneWarnings++
                             activeExam?.id?.let { examId ->
                                 val totalWarnings = warningCount + finalFaceWarnings + audioWarnings + phoneWarnings
@@ -820,7 +820,7 @@ class MainActivity : FragmentActivity() {
                                             ProctoringEventRequest(
                                                 eventName = "ai_alert_created",
                                                 examId = examId,
-                                                latestAlert = "Possible phone detected in camera view."
+                                                latestAlert = "Possible $labels detected in camera view."
                                             )
                                         )
                                     }

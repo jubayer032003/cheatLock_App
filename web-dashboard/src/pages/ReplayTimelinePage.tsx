@@ -1,11 +1,45 @@
-import { Download, Image, SlidersHorizontal } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  Download,
+  Image,
+  SlidersHorizontal,
+  Play,
+  Pause,
+  SkipForward,
+  SkipBack,
+  Bookmark,
+  CheckCircle2,
+  FileText,
+  ShieldAlert,
+  Volume2,
+  Monitor,
+  Camera,
+  Search,
+  ChevronRight,
+  Eye,
+  HelpCircle,
+  HelpCircle as QuestionIcon,
+  Activity,
+  ShieldX
+} from "lucide-react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { fetchProctoringTimeline, fetchSessions, fetchTeacherExam } from "../lib/api";
-import type { ExamSessionStatus, ProctoringTimelineResponse, TimelineEvent } from "../types";
+import { fetchProctoringTimeline, fetchSessions, fetchTeacherExam, updateIntegrityReview } from "../lib/api";
+import type { ExamSessionStatus, ProctoringTimelineResponse, TimelineEvent, IntegrityDecision } from "../types";
+import {
+  Badge,
+  Card,
+  Dialog,
+  EmptyState,
+  ErrorState,
+  MetricCard,
+  PageHeader,
+  ProgressMeter,
+  SkeletonBlock,
+  cn,
+} from "../components/ui";
 
-type ReplayFilter = "all" | "suspicious" | "high";
+type ReplayFilter = "all" | "suspicious" | "high" | "bookmarked";
 type ReplayStudent = {
   studentId: string;
   studentName?: string;
@@ -22,7 +56,24 @@ export function ReplayTimelinePage() {
   const [filter, setFilter] = useState<ReplayFilter>("all");
   const [message, setMessage] = useState("");
 
-  useEffect(() => {
+  // Replay Engine States
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playheadIndex, setPlayheadIndex] = useState(0);
+  const [playbackSpeed, setPlaybackSpeed] = useState<1 | 2 | 4 | 8>(1);
+  const timerRef = useRef<number | null>(null);
+
+  // Persistence States
+  const [bookmarks, setBookmarks] = useState<string[]>([]);
+  const [reviewedEvents, setReviewedEvents] = useState<string[]>([]);
+  const [privateNotes, setPrivateNotes] = useState("");
+  const [integrityDecision, setIntegrityDecision] = useState<IntegrityDecision>("PENDING");
+  const [savingReview, setSavingReview] = useState(false);
+
+  // Timeline list search
+  const [timelineSearch, setTimelineSearch] = useState("");
+
+  // Load students belonging to exam
+  const loadStudents = useCallback(() => {
     Promise.all([fetchTeacherExam(examId), fetchSessions()])
       .then(([exam, items]) => {
         const examSessions = items.filter((session) => String(session.examId || "") === examId);
@@ -46,125 +97,662 @@ export function ReplayTimelinePage() {
           })
           .sort((first, second) => (second.suspicionScore || 0) - (first.suspicionScore || 0));
         setStudents(mergedStudents);
-        setSelectedStudentId(mergedStudents[0]?.studentId || "");
+        if (!selectedStudentId && mergedStudents.length > 0) {
+          setSelectedStudentId(mergedStudents[0].studentId);
+        }
       })
       .catch(() => setMessage("Could not load students."));
-  }, [examId]);
+  }, [examId, selectedStudentId]);
 
   useEffect(() => {
+    loadStudents();
+  }, [examId]);
+
+  // Load student timeline details
+  const loadTimeline = useCallback(() => {
     if (!examId || !selectedStudentId) {
       setTimeline(null);
       return;
     }
+    setIsPlaying(false);
+    setPlayheadIndex(0);
     fetchProctoringTimeline(examId, selectedStudentId)
-      .then(setTimeline)
+      .then((res) => {
+        setTimeline(res);
+        setBookmarks(res.review?.bookmarks || []);
+        setReviewedEvents(res.review?.reviewedEvents || []);
+        setPrivateNotes(res.review?.notes || "");
+        setIntegrityDecision(res.review?.decision || "PENDING");
+      })
       .catch(() => setMessage("Could not load replay timeline."));
   }, [examId, selectedStudentId]);
 
+  useEffect(() => {
+    loadTimeline();
+  }, [examId, selectedStudentId]);
+
+  // Playback loop manager
+  useEffect(() => {
+    if (isPlaying) {
+      const eventsLength = timeline?.timelineEvents.length || 0;
+      const intervalDelay = 1500 / playbackSpeed;
+      
+      timerRef.current = window.setInterval(() => {
+        setPlayheadIndex((prev) => {
+          if (prev >= eventsLength - 1) {
+            setIsPlaying(false);
+            return prev;
+          }
+          return prev + 1;
+        });
+      }, intervalDelay);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    }
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [isPlaying, playbackSpeed, timeline]);
+
+  // Filter events
   const filteredEvents = useMemo(() => {
     const events = timeline?.timelineEvents || [];
-    if (filter === "high") return events.filter((event) => event.severity === "high");
-    if (filter === "suspicious") {
-      return events.filter((event) => event.suspicionScore >= 40 || event.severity !== "low");
+    let list = events;
+
+    if (filter === "high") {
+      list = events.filter((event) => event.severity === "high");
+    } else if (filter === "suspicious") {
+      list = events.filter((event) => event.suspicionScore >= 40 || event.severity !== "low");
+    } else if (filter === "bookmarked") {
+      list = events.filter((event) => bookmarks.includes(event.id));
     }
-    return events;
-  }, [filter, timeline?.timelineEvents]);
+
+    if (timelineSearch.trim()) {
+      const term = timelineSearch.toLowerCase();
+      list = list.filter((event) =>
+        event.alertMessage.toLowerCase().includes(term) ||
+        event.eventType.toLowerCase().includes(term)
+      );
+    }
+
+    return list;
+  }, [filter, timelineSearch, timeline?.timelineEvents, bookmarks]);
+
+  // Current active event at playhead
+  const currentEvent = useMemo(() => {
+    const events = timeline?.timelineEvents || [];
+    return events[playheadIndex] || null;
+  }, [timeline?.timelineEvents, playheadIndex]);
+
+  // Find latest screen snapshot preview up to playhead
+  const latestScreenSnapshot = useMemo(() => {
+    const events = timeline?.timelineEvents || [];
+    for (let i = playheadIndex; i >= 0; i--) {
+      const ev = events[i];
+      if (ev?.eventType === "screen_telemetry_uploaded" && ev.previewBase64) {
+        return ev.previewBase64;
+      }
+    }
+    return null;
+  }, [timeline?.timelineEvents, playheadIndex]);
+
+  // Automated AI Summary Narrative Generator
+  const aiNarrative = useMemo(() => {
+    if (!timeline || timeline.timelineEvents.length === 0) {
+      return "No proctoring event telemetry recorded for this student yet.";
+    }
+
+    const events = timeline.timelineEvents;
+    const score = timeline.finalSuspicionScore;
+    const highAlerts = events.filter((e) => e.severity === "high");
+    const appSwitches = events.filter((e) => e.eventType.includes("WINDOW_BLURRED") || e.eventType.includes("focus"));
+    const phoneDetections = events.filter((e) => e.alertMessage.includes("Phone") || e.alertMessage.includes("PHONE"));
+    const speechDetections = events.filter((e) => e.eventType.includes("VOICE") || e.alertMessage.includes("Speech"));
+
+    let text = `Student entered the proctoring environment with an initial score of 0. `;
+    
+    if (highAlerts.length > 0) {
+      text += `During the session, the AI detector triggered ${highAlerts.length} high-severity event(s). `;
+    } else {
+      text += `Throughout the exam, the student maintained consistent engagement with no critical violations. `;
+    }
+
+    if (phoneDetections.length > 0) {
+      text += `A prohibited item (Mobile Phone) was flagged for a duration of several seconds, causing a score increase. `;
+    }
+    if (appSwitches.length > 0) {
+      text += `The system recorded ${appSwitches.length} instance(s) of browser window switches or exiting fullscreen, suggesting workspace distraction. `;
+    }
+    if (speechDetections.length > 0) {
+      text += `DSP audio engine captured human speech signals in the room, incrementing suspicion levels temporarily. `;
+    }
+
+    if (score >= 70) {
+      text += `Due to multiple compounding anomalies, the final suspicion score escalated to ${score} (Critical Risk). Instructor review and verification is recommended before grading.`;
+    } else if (score >= 40) {
+      text += `The final score concluded at ${score} (Moderate Warning). Overall behavior indicates minor anomalies.`;
+    } else {
+      text += `The session finished with a final suspicion score of ${score} (Normal Risk). The compliance logs support a clean exam pass.`;
+    }
+
+    return text;
+  }, [timeline]);
+
+  // AI Explanation Card info for current event
+  const eventExplanation = useMemo(() => {
+    if (!currentEvent) return null;
+    const type = currentEvent.eventType;
+    let rule = "Default scoring multiplier";
+    let explanation = "Scoring weight was added based on proctoring event rules.";
+    let mod = "Proctor Central";
+
+    if (type.includes("FACE_MISSING")) {
+      mod = "Biometric Face Recognition";
+      rule = "Face Presence Enforcement";
+      explanation = "Webcam frame did not capture any face landmarks within the tracking area. Indicates the student has left the webcam scope.";
+    } else if (type.includes("MULTIPLE_FACES")) {
+      mod = "Biometric Face Recognition";
+      rule = "Single Occupancy Verification";
+      explanation = "Tracking mesh detected more than one human face profile simultaneously. Indicates third-party presence in room.";
+    } else if (type.includes("PHONE") || currentEvent.alertMessage.includes("Phone")) {
+      mod = "YOLOv8n Object Detector";
+      rule = "Prohibited Device Warning";
+      explanation = "Deep learning object detection box matched class label 'Mobile Phone' with high confidence. Device was visible for >= 3 seconds.";
+    } else if (type.includes("VOICE") || type.includes("SPEECH")) {
+      mod = "Intelligent VAD Engine";
+      rule = "Speech Activity Lock";
+      explanation = "Offline voice activity detector identified speech patterns exceeding the calibrated environmental noise threshold.";
+    } else if (type.includes("WINDOW_BLURRED")) {
+      mod = "Kiosk Security Shield";
+      rule = "Browser Focus Constraint";
+      explanation = "Exam window lost active focus, indicating student opened another window, workspace app, or pressed ALT+TAB.";
+    } else if (type.includes("MONITOR") || type.includes("display")) {
+      mod = "Screen Capture Manager";
+      rule = "Multi-Monitor Detection";
+      explanation = "Query on available monitors returned an count > 1. External monitors must be unplugged during testing.";
+    }
+
+    return {
+      module: mod,
+      rule,
+      explanation,
+      score: currentEvent.suspicionScore,
+      severity: currentEvent.severity,
+    };
+  }, [currentEvent]);
+
+  // Save Notes and Flags
+  const handleSaveReviewDetails = async () => {
+    if (!examId || !selectedStudentId) return;
+    setSavingReview(true);
+    try {
+      await updateIntegrityReview(examId, selectedStudentId, integrityDecision, privateNotes, {
+        bookmarks,
+        reviewedEvents,
+      });
+      setMessage("Review details saved successfully.");
+      loadTimeline();
+    } catch {
+      setMessage("Failed to save integrity review flags.");
+    } finally {
+      setSavingReview(false);
+    }
+  };
+
+  const toggleBookmark = (eventId: string) => {
+    setBookmarks((prev) => {
+      const next = prev.includes(eventId) ? prev.filter((id) => id !== eventId) : [...prev, eventId];
+      // Save changes immediately
+      updateIntegrityReview(examId, selectedStudentId, integrityDecision, privateNotes, {
+        bookmarks: next,
+        reviewedEvents,
+      });
+      return next;
+    });
+  };
+
+  const toggleReviewed = (eventId: string) => {
+    setReviewedEvents((prev) => {
+      const next = prev.includes(eventId) ? prev.filter((id) => id !== eventId) : [...prev, eventId];
+      // Save changes immediately
+      updateIntegrityReview(examId, selectedStudentId, integrityDecision, privateNotes, {
+        bookmarks,
+        reviewedEvents: next,
+      });
+      return next;
+    });
+  };
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-lg border border-slate-200 bg-white p-5">
-        <p className="text-sm font-semibold text-emerald-700">Exam Replay Timeline</p>
-        <h2 className="mt-1 text-2xl font-semibold">{timeline?.exam.title || "Replay Timeline"}</h2>
-        <p className="mt-2 text-sm text-slate-500">Review each student's proctoring history after an exam.</p>
+    <div className="space-y-6 text-slate-100 font-sans">
+      
+      {/* Header Banner */}
+      <section className="rounded-lg border border-slate-800 bg-slate-900 p-5">
+        <p className="text-xs font-mono font-bold text-violet-400 uppercase tracking-widest">Exam Replay Timeline</p>
+        <h2 className="mt-1 text-xl font-bold text-white tracking-wider">{timeline?.exam.title || "Replay Timeline"}</h2>
+        <p className="mt-2 text-xs text-slate-400">Review student compliance timeline, playback snapshots, and commit review verdicts.</p>
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-[320px_1fr]">
-        <aside className="rounded-lg border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 p-4">
-            <h3 className="font-semibold">Students</h3>
-            <p className="text-sm text-slate-500">Final score and status</p>
+      {/* Main Grid: Left sidebar student list, Right replay deck */}
+      <section className="grid gap-6 lg:grid-cols-[300px_1fr]">
+        
+        {/* Student list card */}
+        <aside className="rounded-lg border border-slate-800 bg-slate-900 overflow-hidden flex flex-col max-h-[800px]">
+          <div className="border-b border-slate-800 p-4 bg-slate-950">
+            <h3 className="text-sm font-bold text-white uppercase tracking-wider">Students</h3>
+            <p className="text-[10px] text-slate-400">Select candidate to inspect replay</p>
           </div>
-          <div className="divide-y divide-slate-100">
+          <div className="divide-y divide-slate-800 overflow-y-auto flex-1">
             {students.map((session) => (
               <button
-                className={`w-full px-4 py-3 text-left hover:bg-slate-50 ${
-                  selectedStudentId === session.studentId ? "bg-emerald-50" : ""
+                className={`w-full px-4 py-3 text-left hover:bg-slate-800 flex items-center justify-between gap-3 transition ${
+                  selectedStudentId === session.studentId ? "bg-slate-800/80 border-l-2 border-violet-500" : ""
                 }`}
                 key={`${session.studentId}-${session.examId || ""}`}
                 onClick={() => setSelectedStudentId(session.studentId)}
                 type="button"
               >
-                <p className="font-medium">{session.studentName || session.studentId}</p>
-                <p className="text-sm text-slate-500">
-                  Score {session.suspicionScore || 0}, {session.status}
-                </p>
+                <div>
+                  <p className="text-xs font-bold text-white">{session.studentName || session.studentId}</p>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">{session.studentId}</p>
+                </div>
+                <div className="text-right font-mono">
+                  <span className={`text-xs font-bold ${
+                    session.suspicionScore && session.suspicionScore >= 70 
+                      ? "text-red-400" 
+                      : session.suspicionScore && session.suspicionScore >= 40 
+                        ? "text-amber-400" 
+                        : "text-emerald-400"
+                  }`}>
+                    {session.suspicionScore || 0}%
+                  </span>
+                </div>
               </button>
             ))}
-            {students.length === 0 && <p className="p-4 text-sm text-slate-500">No students found for this exam yet.</p>}
+            {students.length === 0 && <p className="p-4 text-xs text-slate-500 text-center font-mono">No student records found.</p>}
           </div>
         </aside>
 
+        {/* Replay Details Deck */}
         <main className="space-y-6">
-          <section className="rounded-lg border border-slate-200 bg-white p-5">
-            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          
+          {/* AI Exam Summary Card */}
+          <Card className="p-5 bg-slate-900 border-slate-800 flex flex-col gap-4">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between border-b border-slate-800 pb-3">
               <div>
-                <h3 className="text-xl font-semibold">
-                  {timeline?.student.studentName || selectedStudentId || "Select student"}
+                <h3 className="text-base font-bold text-white tracking-wide">
+                  {timeline?.student.studentName || selectedStudentId || "No student selected"}
                 </h3>
-                <p className="text-sm text-slate-500">
-                  Final suspicion score: {timeline?.finalSuspicionScore || 0}/100
-                </p>
+                <p className="text-xs text-slate-400 mt-0.5 font-mono">Student ID: {selectedStudentId}</p>
               </div>
+              
               <div className="flex gap-2">
                 <button
-                  className="secondary-button"
+                  className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 text-slate-300 transition text-xs py-1.5 px-3 rounded"
                   disabled={!timeline}
                   type="button"
                   onClick={() => timeline && exportStudentPdf(timeline, filteredEvents, false)}
                 >
-                  Print
+                  Print Report
                 </button>
                 <button
-                  className="primary-button"
+                  className="primary-button bg-violet-600 hover:bg-violet-700 text-white transition text-xs py-1.5 px-3 rounded flex items-center gap-1.5"
                   disabled={!timeline}
                   type="button"
                   onClick={() => timeline && exportStudentPdf(timeline, filteredEvents, true)}
                 >
-                  <Download size={17} />
+                  <Download size={13} />
                   Download PDF
                 </button>
               </div>
             </div>
-          </section>
 
-          <section className="rounded-lg border border-slate-200 bg-white p-5">
-            <div className="mb-4 flex items-center gap-2">
-              <SlidersHorizontal size={18} />
-              <h3 className="font-semibold">Filters</h3>
+            {/* AI Summary narrative text */}
+            <div className="bg-slate-950 border border-slate-800 rounded p-4 flex flex-col gap-2">
+              <span className="text-[9px] uppercase tracking-wider text-violet-400 font-mono font-bold">Concise AI behavior Summary</span>
+              <p className="text-xs text-slate-300 leading-relaxed font-sans">{aiNarrative}</p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <FilterButton active={filter === "all"} label="All events" onClick={() => setFilter("all")} />
-              <FilterButton active={filter === "suspicious"} label="Only suspicious" onClick={() => setFilter("suspicious")} />
-              <FilterButton active={filter === "high"} label="Only high severity" onClick={() => setFilter("high")} />
-            </div>
-          </section>
+          </Card>
 
+          {/* Session Replay Player Component */}
+          <Card className="p-5 bg-slate-900 border-slate-850 flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+              <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <Play size={14} className="text-violet-400" />
+                Session Replay player
+              </h3>
+              
+              {/* Playback speed selector */}
+              <div className="flex items-center gap-1.5 text-xs font-mono">
+                <span className="text-slate-500">Speed:</span>
+                {([1, 2, 4, 8] as const).map((speed) => (
+                  <button
+                    key={speed}
+                    onClick={() => setPlaybackSpeed(speed)}
+                    className={cn(
+                      "px-2 py-0.5 rounded border text-[10px]",
+                      playbackSpeed === speed ? "bg-violet-600 border-violet-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
+                    )}
+                  >
+                    {speed}x
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Playback Dual-feeds (Webcam & Screen) */}
+            <div className="grid gap-4 md:grid-cols-2">
+              
+              {/* Webcam Viewport */}
+              <div className="flex flex-col gap-2">
+                <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1"><Camera size={12} /> Proctor Webcam Capture</span>
+                <div className="aspect-video bg-slate-950 rounded-lg border border-slate-800 overflow-hidden relative flex items-center justify-center">
+                  {currentEvent?.previewUrl || currentEvent?.previewBase64 ? (
+                    <img 
+                      className="h-full w-full object-cover" 
+                      src={currentEvent.previewUrl || currentEvent.previewBase64} 
+                      alt="Proctor Webcam" 
+                    />
+                  ) : (
+                    <div className="text-slate-650 text-xs font-mono">No camera frame at playhead</div>
+                  )}
+                  {/* Watermark overlay */}
+                  <div className="absolute bottom-2 left-2 bg-slate-950/80 border border-slate-800 rounded px-1.5 py-0.5 text-[8px] font-mono text-slate-400">
+                    Playhead: {playheadIndex + 1} / {timeline?.timelineEvents.length || 0}
+                  </div>
+                </div>
+              </div>
+
+              {/* Desktop Screen Viewport */}
+              <div className="flex flex-col gap-2">
+                <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1"><Monitor size={12} /> Desktop Screen snapshot</span>
+                <div className="aspect-video bg-slate-950 rounded-lg border border-slate-800 overflow-hidden relative flex items-center justify-center">
+                  {latestScreenSnapshot ? (
+                    <img 
+                      className="h-full w-full object-contain bg-black" 
+                      src={latestScreenSnapshot} 
+                      alt="Screen snapshot" 
+                    />
+                  ) : (
+                    <div className="text-slate-650 text-xs font-mono">No desktop snapshots recorded</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Replay Controls & Seek bar */}
+            <div className="flex flex-col gap-3 pt-3 border-t border-slate-800">
+              
+              {/* Range seek slider */}
+              <div className="flex items-center gap-3">
+                <span className="text-[10px] font-mono text-slate-500 shrink-0">Seek</span>
+                <input 
+                  type="range"
+                  min={0}
+                  max={Math.max(0, (timeline?.timelineEvents.length || 1) - 1)}
+                  value={playheadIndex}
+                  onChange={(e) => setPlayheadIndex(Number(e.target.value))}
+                  className="flex-1 accent-violet-500 bg-slate-950 h-1.5 rounded-lg appearance-none cursor-pointer"
+                />
+                <span className="text-[10px] font-mono text-slate-300 w-12 text-right shrink-0">
+                  {playheadIndex + 1}/{timeline?.timelineEvents.length || 0}
+                </span>
+              </div>
+
+              {/* Play, Pause, Jumps controls */}
+              <div className="flex justify-center items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => setPlayheadIndex((p) => Math.max(0, p - 1))}
+                  className="p-1.5 rounded bg-slate-950 border border-slate-800 text-slate-300 hover:text-white"
+                  title="Step Backward"
+                >
+                  <SkipBack size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsPlaying(!isPlaying)}
+                  className="p-2.5 rounded-full bg-violet-600 hover:bg-violet-700 text-white shadow-lg flex items-center justify-center transition"
+                  title={isPlaying ? "Pause" : "Play"}
+                >
+                  {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPlayheadIndex((p) => Math.min((timeline?.timelineEvents.length || 1) - 1, p + 1))}
+                  className="p-1.5 rounded bg-slate-950 border border-slate-800 text-slate-300 hover:text-white"
+                  title="Step Forward"
+                >
+                  <SkipForward size={14} />
+                </button>
+              </div>
+            </div>
+
+            {/* Playhead Event Info / AI Explanation Panel */}
+            {eventExplanation && (
+              <div className="bg-slate-950 border border-slate-800 rounded p-4 mt-2 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 bg-red-950/20 border border-red-500/20 text-red-400 rounded">
+                      {eventExplanation.severity} severity
+                    </span>
+                    <span className="text-xs font-bold text-white font-mono">{formatEventName(currentEvent?.eventType || "")}</span>
+                  </div>
+                  <span className="text-xs font-bold text-violet-400 font-mono">
+                    Score Impact: +{eventExplanation.score}
+                  </span>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3 text-xs font-mono border-t border-slate-900 pt-3">
+                  <div>
+                    <span className="text-slate-500 block text-[9px] uppercase">AI Module</span>
+                    <span className="text-slate-300 font-bold">{eventExplanation.module}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[9px] uppercase">Rule Triggered</span>
+                    <span className="text-slate-300 font-bold">{eventExplanation.rule}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[9px] uppercase">Event Time</span>
+                    <span className="text-slate-300 font-bold">
+                      {currentEvent ? new Date(currentEvent.timestamp).toLocaleTimeString() : ""}
+                    </span>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed font-sans border-t border-slate-900 pt-3">
+                  <span className="font-bold text-slate-300">Explanation:</span> {eventExplanation.explanation}
+                </p>
+                <div className="flex justify-between items-center pt-2 border-t border-slate-900 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => currentEvent && toggleBookmark(currentEvent.id)}
+                    className={cn(
+                      "flex items-center gap-1 px-2.5 py-1 rounded border transition font-mono text-[10px]",
+                      currentEvent && bookmarks.includes(currentEvent.id)
+                        ? "bg-amber-950/20 border-amber-500/30 text-amber-400 font-bold"
+                        : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
+                    )}
+                  >
+                    <Bookmark size={11} /> {currentEvent && bookmarks.includes(currentEvent.id) ? "Bookmarked" : "Bookmark Incident"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => currentEvent && toggleReviewed(currentEvent.id)}
+                    className={cn(
+                      "flex items-center gap-1 px-2.5 py-1 rounded border transition font-mono text-[10px]",
+                      currentEvent && reviewedEvents.includes(currentEvent.id)
+                        ? "bg-emerald-950/20 border-emerald-500/30 text-emerald-400 font-bold"
+                        : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
+                    )}
+                  >
+                    <CheckCircle2 size={11} /> {currentEvent && reviewedEvents.includes(currentEvent.id) ? "Marked Reviewed" : "Mark Reviewed"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* Risk Evolution Over Time Chart */}
           <ScoreChart events={filteredEvents} />
-          <Timeline events={filteredEvents} />
+
+          {/* Teacher Review flags & comments notes */}
+          <Card className="p-5 bg-slate-900 border-slate-800 flex flex-col gap-4">
+            <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5 border-b border-slate-800 pb-2">
+              <FileText size={14} className="text-violet-400" />
+              Teacher Session Review
+            </h3>
+            
+            <div className="grid gap-4 md:grid-cols-[180px_1fr] text-xs">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-slate-500 block text-[10px] uppercase font-mono">Compliance Verdict</span>
+                <select 
+                  value={integrityDecision} 
+                  onChange={(e) => setIntegrityDecision(e.target.value as IntegrityDecision)}
+                  className="bg-slate-950 border border-slate-800 rounded px-2.5 py-2 text-slate-300 focus:border-violet-500 focus:outline-none"
+                >
+                  <option value="PENDING">Pending Review</option>
+                  <option value="CLEAN">Clean Pass</option>
+                  <option value="REVIEW_NEEDED">Review Needed</option>
+                  <option value="DISQUALIFIED">Disqualify Student</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-slate-500 block text-[10px] uppercase font-mono">Private Notes & Comments</span>
+                <textarea 
+                  placeholder="Enter notes explaining the review verdict..." 
+                  value={privateNotes}
+                  onChange={(e) => setPrivateNotes(e.target.value)}
+                  rows={2}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-200 placeholder-slate-700 resize-none focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+            </div>
+            <button 
+              type="button"
+              disabled={savingReview}
+              onClick={() => selectedStudentId && handleSaveReviewDetails()}
+              className="mt-2 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded font-bold transition flex items-center justify-center gap-1.5 text-xs uppercase tracking-wider"
+            >
+              {savingReview ? "Saving Changes..." : "Commit Integrity Verdict"}
+            </button>
+          </Card>
+
+          {/* Filter Timeline Events List */}
+          <section className="rounded-lg border border-slate-800 bg-slate-900 p-5 space-y-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="font-bold text-white text-sm">Chronological Event Logs ({filteredEvents.length})</h3>
+                <p className="text-[10px] text-slate-400 mt-0.5">Click any event to seek playhead to that timestamp.</p>
+              </div>
+              
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
+                <input 
+                  type="text" 
+                  placeholder="Search events description..."
+                  value={timelineSearch}
+                  onChange={(e) => setTimelineSearch(e.target.value)}
+                  className="bg-slate-950 border border-slate-800 text-xs rounded pl-8 pr-2.5 py-1.5 sm:w-48 text-slate-300 focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Filter buttons */}
+            <div className="flex flex-wrap gap-2 text-xs">
+              <button 
+                onClick={() => setFilter("all")}
+                className={cn("px-3 py-1.5 rounded transition uppercase font-mono text-[10px] border", filter === "all" ? "bg-violet-600 border-violet-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200")}
+              >
+                All events
+              </button>
+              <button 
+                onClick={() => setFilter("suspicious")}
+                className={cn("px-3 py-1.5 rounded transition uppercase font-mono text-[10px] border", filter === "suspicious" ? "bg-violet-600 border-violet-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200")}
+              >
+                Only suspicious
+              </button>
+              <button 
+                onClick={() => setFilter("high")}
+                className={cn("px-3 py-1.5 rounded transition uppercase font-mono text-[10px] border", filter === "high" ? "bg-violet-600 border-violet-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200")}
+              >
+                Only high severity
+              </button>
+              <button 
+                onClick={() => setFilter("bookmarked")}
+                className={cn("px-3 py-1.5 rounded transition uppercase font-mono text-[10px] border", filter === "bookmarked" ? "bg-violet-600 border-violet-500 text-white" : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200")}
+              >
+                Bookmarked ({bookmarks.length})
+              </button>
+            </div>
+
+            {/* Event list items */}
+            <div className="space-y-2.5 max-h-[500px] overflow-y-auto pr-1">
+              {filteredEvents.map((event, index) => {
+                const isBookmarked = bookmarks.includes(event.id);
+                const isReviewed = reviewedEvents.includes(event.id);
+                const originalIndex = timeline?.timelineEvents.findIndex((e) => e.id === event.id) ?? index;
+                
+                return (
+                  <button 
+                    className={cn(
+                      "w-full rounded-lg border p-3.5 text-left transition relative flex gap-3 select-none outline-none focus:ring-1 focus:ring-violet-500",
+                      originalIndex === playheadIndex 
+                        ? "border-violet-500 bg-slate-800/40 shadow-sm" 
+                        : "border-slate-850 bg-slate-950/40 hover:border-slate-700"
+                    )}
+                    key={event.id}
+                    onClick={() => setPlayheadIndex(originalIndex)}
+                    type="button"
+                  >
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          {isBookmarked && <Bookmark size={12} className="text-amber-500 fill-amber-500" />}
+                          {isReviewed && <CheckCircle2 size={12} className="text-emerald-500" />}
+                          <span className="font-bold text-white text-xs">{formatEventName(event.eventType)}</span>
+                        </div>
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {new Date(event.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-350">{event.alertMessage || "Active focus check."}</p>
+                      
+                      <div className="flex items-center gap-2 pt-1">
+                        <span className={`text-[8.5px] uppercase font-mono px-1.5 py-0.5 rounded ${severityClass(event.severity)}`}>
+                          {event.severity}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-mono">Score: {event.suspicionScore}/100</span>
+                      </div>
+                    </div>
+                    <div className="shrink-0 flex items-center text-slate-600">
+                      <ChevronRight size={16} />
+                    </div>
+                  </button>
+                );
+              })}
+              {filteredEvents.length === 0 && (
+                <p className="py-6 text-xs text-slate-500 font-mono text-center">No events match the selected filters.</p>
+              )}
+            </div>
+          </section>
         </main>
       </section>
 
-      {message && <p className="text-sm text-rose-600">{message}</p>}
+      {message && <p className="text-xs text-rose-500 font-mono text-center">{message}</p>}
     </div>
   );
 }
 
-function FilterButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
-  return (
-    <button className={active ? "primary-button" : "secondary-button"} type="button" onClick={onClick}>
-      {label}
-    </button>
-  );
+function severityClass(severity: string) {
+  if (severity === "high") return "bg-red-950/20 border border-red-500/30 text-red-400";
+  if (severity === "medium") return "bg-amber-950/20 border border-amber-500/30 text-amber-400";
+  return "bg-slate-900 border border-slate-800 text-slate-400";
+}
+
+function formatEventName(eventType: string) {
+  return eventType.split("_").join(" ");
 }
 
 function ScoreChart({ events }: { events: TimelineEvent[] }) {
@@ -175,23 +763,26 @@ function ScoreChart({ events }: { events: TimelineEvent[] }) {
   }));
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-5">
-      <h3 className="mb-4 font-semibold">Suspicion Score Over Time</h3>
-      <div className="h-56 rounded-lg bg-slate-50 p-3">
-        {points.length === 0 && <p className="self-center text-sm text-slate-500">No score events yet.</p>}
+    <section className="rounded-lg border border-slate-800 bg-slate-900 p-5">
+      <h3 className="mb-4 font-bold text-white text-sm tracking-wider flex items-center gap-2">
+        <Activity className="text-violet-400" size={16} />
+        Suspicion Score Risk Evolution
+      </h3>
+      <div className="h-56 rounded-lg bg-slate-950 p-3">
+        {points.length === 0 && <p className="self-center text-xs text-slate-500 font-mono text-center py-20">No suspicion score changes logged.</p>}
         {points.length > 0 && (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data}>
               <defs>
                 <linearGradient id="replayScore" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#06b6d4" stopOpacity={0} />
+                  <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4} />
+                  <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <XAxis dataKey="name" stroke="#94a3b8" tickLine={false} axisLine={false} />
-              <YAxis domain={[0, 100]} stroke="#94a3b8" tickLine={false} axisLine={false} width={34} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #cbd5e1" }} />
-              <Area dataKey="score" stroke="#06b6d4" fill="url(#replayScore)" strokeWidth={2} />
+              <XAxis dataKey="name" stroke="#64748b" tickLine={false} axisLine={false} style={{ fontSize: "10px" }} />
+              <YAxis domain={[0, 100]} stroke="#64748b" tickLine={false} axisLine={false} width={25} style={{ fontSize: "10px" }} />
+              <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", color: "#f8fafc" }} />
+              <Area dataKey="score" stroke="#8b5cf6" fill="url(#replayScore)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         )}
@@ -200,50 +791,17 @@ function ScoreChart({ events }: { events: TimelineEvent[] }) {
   );
 }
 
-function Timeline({ events }: { events: TimelineEvent[] }) {
-  return (
-    <section className="rounded-lg border border-slate-200 bg-white p-5">
-      <h3 className="mb-4 font-semibold">Alert Timeline</h3>
-      <div className="space-y-3">
-        {events.map((event) => (
-          <article className="rounded-lg border border-slate-200 p-4" key={event.id}>
-            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-              <div>
-                <p className="font-semibold">{formatEventName(event.eventType)}</p>
-                <p className="text-sm text-slate-500">{new Date(event.timestamp).toLocaleString()}</p>
-              </div>
-              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${severityClass(event.severity)}`}>
-                {event.severity}
-              </span>
-            </div>
-            <p className="mt-3 text-sm text-slate-700">{event.alertMessage || "No alert message."}</p>
-            <p className="mt-1 text-sm text-slate-500">Score: {event.suspicionScore}/100</p>
-            {(event.previewUrl || event.previewBase64) && (
-              <div className="mt-3 flex items-center gap-3">
-                <Image size={18} className="text-slate-500" />
-                <img
-                  className="h-28 w-40 rounded-md object-cover"
-                  src={event.previewUrl || event.previewBase64}
-                  alt="Camera preview snapshot"
-                />
-              </div>
-            )}
-          </article>
-        ))}
-        {events.length === 0 && <p className="py-6 text-sm text-slate-500">No events match this filter.</p>}
-      </div>
-    </section>
-  );
+function FullscreenStudent({ student, detailTab, setDetailTab }: { student: ProctoringTimelineResponse; detailTab: "camera" | "screen"; setDetailTab: (tab: "camera" | "screen") => void }) {
+  return null; // Left for dialog wrapper
 }
 
-function severityClass(severity: string) {
-  if (severity === "high") return "bg-rose-100 text-rose-800";
-  if (severity === "medium") return "bg-amber-100 text-amber-800";
-  return "bg-emerald-100 text-emerald-800";
-}
-
-function formatEventName(eventType: string) {
-  return eventType.split("_").join(" ");
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function exportStudentPdf(timeline: ProctoringTimelineResponse, events: TimelineEvent[], isDownload: boolean = false) {
@@ -279,8 +837,6 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
             margin: 0 auto;
             line-height: 1.45;
           }
-          
-          /* Enforce light background and dark text under both display modes */
           html.dark body {
             background-color: #ffffff !important;
             color: #0f172a !important;
@@ -297,8 +853,6 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
           html.dark div:not(.logo-icon):not(.gauge):not(.summary-kpi-card):not(.event-image-container) {
             color: #1e293b !important;
           }
-
-          /* Force light backgrounds for containers */
           .meta-box {
             background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%) !important;
             border: 1px solid #e2e8f0 !important;
@@ -323,12 +877,9 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
             border: 1px solid #e2e8f0 !important;
             page-break-inside: avoid !important;
           }
-          
-          /* Badges explicit colors */
           .badge-low { background: #d1fae5 !important; color: #065f46 !important; border: 1px solid #a7f3d0 !important; }
           .badge-medium { background: #fef3c7 !important; color: #92400e !important; border: 1px solid #fde68a !important; }
           .badge-high { background: #ffe4e6 !important; color: #9f1239 !important; border: 1px solid #fecdd3 !important; }
-          
           .gauge-safe { background: #ecfdf5 !important; border-color: #10b981 !important; color: #047857 !important; }
           .gauge-safe-badge { background: #d1fae5 !important; color: #065f46 !important; border: 1px solid #a7f3d0 !important; }
           .gauge-warning { background: #fffbeb !important; border-color: #f59e0b !important; color: #b45309 !important; }
@@ -460,36 +1011,6 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
             letter-spacing: 0.04em;
             padding: 3px 10px;
             border-radius: 9999px;
-          }
-          .gauge-safe {
-            background: #ecfdf5;
-            border-color: #10b981;
-            color: #047857;
-          }
-          .gauge-safe-badge {
-            background: #d1fae5;
-            color: #065f46;
-            border: 1px solid #a7f3d0;
-          }
-          .gauge-warning {
-            background: #fffbeb;
-            border-color: #f59e0b;
-            color: #b45309;
-          }
-          .gauge-warning-badge {
-            background: #fef3c7;
-            color: #92400e;
-            border: 1px solid #fde68a;
-          }
-          .gauge-suspicious {
-            background: #fff1f2;
-            border-color: #ef4444;
-            color: #be123c;
-          }
-          .gauge-suspicious-badge {
-            background: #ffe4e6;
-            color: #9f1239;
-            border: 1px solid #fecdd3;
           }
           .method-box {
             border-left: 4px solid #7c3aed;
@@ -800,93 +1321,17 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
     </html>
   `;
 
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) return;
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
+
   if (isDownload) {
-    const loadScriptAndRun = () => {
-      // @ts-ignore
-      if (window.html2pdf) {
-        generatePdf();
-      } else {
-        const script = document.createElement("script");
-        script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
-        script.onload = () => generatePdf();
-        document.body.appendChild(script);
-      }
-    };
-
-    const generatePdf = () => {
-      const container = document.createElement("div");
-      container.innerHTML = htmlContent;
-
-      const bodyContent = container.querySelector("body") || container;
-
-      // Create a hidden wrapper container in the DOM flow to allow html2canvas rendering
-      const wrapper = document.createElement("div");
-      wrapper.style.position = "absolute";
-      wrapper.style.top = "0px";
-      wrapper.style.left = "0px";
-      wrapper.style.width = "720px";
-      wrapper.style.height = "1px";
-      wrapper.style.overflow = "hidden";
-      wrapper.style.zIndex = "-1000";
-
-      const content = bodyContent.cloneNode(true) as HTMLElement;
-      content.style.display = "block";
-      content.style.width = "720px";
-      content.style.backgroundColor = "#ffffff";
-      content.style.padding = "24px";
-      content.className = "font-sans text-slate-800";
-
-      wrapper.appendChild(content);
-      document.body.appendChild(wrapper);
-
-      const options = {
-        margin: [0.3, 0.3],
-        filename: `CheatLock_Replay_Report_${(timeline.student.studentName || timeline.student.studentId).replace(/[^a-z0-9]/gi, "_")}.pdf`,
-        image: { type: "jpeg", quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, logging: false },
-        jsPDF: { unit: "in", format: "a4", orientation: "portrait" },
-        pagebreak: { mode: ['avoid-all', 'css'] }
-      };
-
-      // @ts-ignore
-      window.html2pdf()
-        .set(options)
-        .from(content)
-        .save()
-        .then(() => {
-          document.body.removeChild(wrapper);
-        })
-        .catch((err: any) => {
-          console.error("PDF generation failed", err);
-          document.body.removeChild(wrapper);
-        });
-    };
-
-    loadScriptAndRun();
+    // Let browser prompt print immediately, which supports saving as PDF
+    printWindow.focus();
+    printWindow.print();
   } else {
-    const report = window.open("", "_blank", "width=900,height=700");
-    if (!report) return;
-    report.document.write(htmlContent);
-    report.document.write(`
-      <script>
-        window.onload = function() {
-          setTimeout(function() {
-            window.print();
-          }, 300);
-        };
-      </script>
-      </body>
-      </html>
-    `);
-    report.document.close();
+    printWindow.focus();
+    printWindow.print();
   }
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }

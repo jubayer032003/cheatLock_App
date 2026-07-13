@@ -23,7 +23,7 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://cheatl
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 50000,
+  timeout: 60000,
 });
 
 api.interceptors.request.use((config) => {
@@ -228,11 +228,64 @@ export async function updateIntegrityReview(
   examId: string,
   studentId: string,
   decision: IntegrityDecision,
-  notes: string
+  notes: string,
+  extra?: { bookmarks?: string[]; reviewedEvents?: string[] }
 ) {
   const { data } = await api.put(
     `/teacher/exams/${examId}/students/${encodeURIComponent(studentId)}/integrity-review`,
-    { decision, notes }
+    { decision, notes, ...extra }
   );
   return data.review;
+}
+
+export async function fetchTenantSettings() {
+  const { data } = await api.get("/tenants/my-tenant");
+  return data.tenant;
+}
+
+export async function updateTenantSettings(payload: any) {
+  const { data } = await api.put("/tenants/my-tenant", payload);
+  return data.tenant;
+}
+
+export async function fetchTenantAuditLogs() {
+  const { data } = await api.get("/tenants/my-tenant/audit-logs");
+  return data.logs;
+}
+
+export async function fetchTenantUsers() {
+  const { data } = await api.get("/tenants/my-tenant/users");
+  return data.users;
+}
+
+export async function createTenantUser(payload: any) {
+  const { data } = await api.post("/tenants/my-tenant/users", payload);
+  return data.user;
+}
+
+export async function bulkImportTenantUsers(users: any[]) {
+  const { data } = await api.post("/tenants/my-tenant/users/bulk-import", { users });
+  return data;
+}
+
+export async function toggleUserSuspension(userId: string, status: string) {
+  const { data } = await api.put(`/tenants/my-tenant/users/${userId}/status`, { status });
+  return data;
+}
+
+export async function resetUserPassword(userId: string) {
+  const { data } = await api.put(`/tenants/my-tenant/users/${userId}/reset-password`);
+  return data;
+}
+
+export async function deleteTenantUser(userId: string) {
+  const { data } = await api.delete(`/tenants/my-tenant/users/${userId}`);
+  return data;
+}
+
+export async function downloadIntegrityReportPdf(examId: string) {
+  const { data } = await api.get(`/teacher/exams/${examId}/integrity-report/pdf`, {
+    responseType: "blob",
+  });
+  return data;
 }

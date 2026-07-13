@@ -1,4 +1,4 @@
-import { BookOpen, ClipboardList, LayoutDashboard, LogOut, ShieldCheck, Users } from "lucide-react";
+import { BookOpen, ClipboardList, LayoutDashboard, LogOut, ShieldCheck, Users, BrainCircuit, Building2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { clearAuth, getAuthUser } from "../lib/auth";
@@ -10,6 +10,10 @@ const navItems = [
   { to: "/classes", label: "Classes", icon: Users },
   { to: "/community", label: "Community", icon: Users },
   { to: "/reports", label: "Reports", icon: ClipboardList },
+  { to: "/model-card", label: "Model & Data", icon: BrainCircuit },
+  { to: "/institution", label: "Institution", icon: Building2 },
+  { to: "/users", label: "Users", icon: Users },
+  { to: "/audit-logs", label: "Audit Logs", icon: ClipboardList },
   { to: "/settings", label: "Settings", icon: ShieldCheck },
 ];
 

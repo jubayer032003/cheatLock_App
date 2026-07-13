@@ -52,6 +52,13 @@ class ExamSecurityController(
             }
         }
 
+        // Trigger native Android screen pinning / Lock Task Mode
+        runCatching {
+            activity.startLockTask()
+        }.onFailure { error ->
+            Log.w("CHEATLOCK_FLOW", "Failed to startLockTask(): ${error.message}")
+        }
+
         enterImmersiveMode()
         registerScreenCaptureCallback()
     }
@@ -66,6 +73,13 @@ class ExamSecurityController(
             }.onFailure { error ->
                 Log.w("CHEATLOCK_FLOW", "Failed to setHideOverlayWindows(false): ${error.message}")
             }
+        }
+
+        // Release native Android screen pinning / Lock Task Mode
+        runCatching {
+            activity.stopLockTask()
+        }.onFailure { error ->
+            Log.w("CHEATLOCK_FLOW", "Failed to stopLockTask(): ${error.message}")
         }
 
         exitImmersiveMode()

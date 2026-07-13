@@ -25,6 +25,14 @@ const integrityReviewSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    bookmarks: {
+      type: [String],
+      default: [],
+    },
+    reviewedEvents: {
+      type: [String],
+      default: [],
+    },
     reviewedBy: {
       type: String,
       default: "",

@@ -6,6 +6,8 @@ import { IntegrityReview } from "../models/IntegrityReview.js";
 import { ProctoringEvent } from "../models/ProctoringEvent.js";
 import { Submission } from "../models/Submission.js";
 import { StudentNotification } from "../models/StudentNotification.js";
+import { getSignedFrameUrl } from "../services/s3.js";
+import { generateExamReportPdf } from "../services/pdfGenerator.js";
 import {
   notifyGradeAssigned,
   serializeNotification,
@@ -59,9 +61,10 @@ teacherRouter.get(
       }
 
       const studentId = String(req.params.studentId || "").trim().toLowerCase();
-      const [session, events] = await Promise.all([
+      const [session, events, review] = await Promise.all([
         ExamSession.findOne({ examId: exam._id, studentId }).lean(),
         ProctoringEvent.find({ examId: exam._id, studentId }).sort({ createdAt: 1 }).lean(),
+        IntegrityReview.findOne({ examId: exam._id, studentId }).lean(),
       ]);
 
       res.json({
@@ -76,16 +79,29 @@ teacherRouter.get(
           status: session?.status || "NOT_STARTED",
         },
         finalSuspicionScore: session?.suspicionScore || events.at(-1)?.suspicionScore || 0,
-        timelineEvents: events.map((event) => ({
-          id: event._id.toString(),
-          eventType: event.eventType,
-          timestamp: event.createdAt,
-          alertMessage: event.alertMessage || "",
-          suspicionScore: event.suspicionScore || 0,
-          severity: event.severity || "low",
-          previewUrl: event.previewUrl || "",
-          previewBase64: event.previewBase64 || "",
-        })),
+        review: review ? serializeReview(review) : null,
+        timelineEvents: await Promise.all(
+          events.map(async (event) => {
+            let previewUrl = event.previewUrl || "";
+            if (event.previewBase64 && !event.previewBase64.startsWith("data:") && !event.previewBase64.startsWith("http")) {
+              try {
+                previewUrl = await getSignedFrameUrl(event.previewBase64);
+              } catch (err) {
+                console.error("Failed to sign frame URL for timeline:", err);
+              }
+            }
+            return {
+              id: event._id.toString(),
+              eventType: event.eventType,
+              timestamp: event.createdAt,
+              alertMessage: event.alertMessage || "",
+              suspicionScore: event.suspicionScore || 0,
+              severity: event.severity || "low",
+              previewUrl,
+              previewBase64: event.previewBase64 || "",
+            };
+          })
+        ),
       });
     } catch (error) {
       next(error);
@@ -101,6 +117,28 @@ teacherRouter.get(
     try {
       const exam = await findTeacherExam(req.user.identifier, req.params.examId);
       res.json(await buildIntegrityReport(exam));
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+teacherRouter.get(
+  "/exams/:examId/integrity-report/pdf",
+  requireAuth,
+  requireRole("TEACHER"),
+  async (req, res, next) => {
+    try {
+      const exam = await findTeacherExam(req.user.identifier, req.params.examId);
+      const reportData = await buildIntegrityReport(exam);
+      const pdfBuffer = await generateExamReportPdf(exam, reportData);
+      
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="Integrity_Report_${exam.title.replace(/\s+/g, "_")}.pdf"`
+      );
+      res.send(pdfBuffer);
     } catch (error) {
       next(error);
     }
@@ -130,6 +168,8 @@ teacherRouter.put(
           $set: {
             decision,
             notes: String(req.body?.notes || "").trim(),
+            bookmarks: req.body?.bookmarks || [],
+            reviewedEvents: req.body?.reviewedEvents || [],
             reviewedBy: req.user.identifier,
             reviewedAt: new Date(),
           },
@@ -546,6 +586,8 @@ function serializeReview(review) {
   return {
     decision: review.decision || "PENDING",
     notes: review.notes || "",
+    bookmarks: review.bookmarks || [],
+    reviewedEvents: review.reviewedEvents || [],
     reviewedBy: review.reviewedBy || "",
     reviewedAt: review.reviewedAt || null,
   };

@@ -1,0 +1,205 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cheatlock
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cheatlock-config
+  namespace: cheatlock
+data:
+  PORT: "3000"
+  MONGODB_URI: "mongodb://mongodb-srv.cheatlock.svc.cluster.local:27017/cheatlock"
+  REDIS_URL: "redis://redis-srv.cheatlock.svc.cluster.local:6379"
+  S3_ENDPOINT: "https://s3.amazonaws.com"
+  S3_BUCKET: "cheatlock-enterprise-telemetry"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cheatlock-secret
+  namespace: cheatlock
+type: Opaque
+data:
+  # Base64 encoded values for production secrets
+  JWT_SECRET: c2VjcmV0X2tleV9mb3JfZW50ZXJwcmlzZV9zYWFzX2NoZWF0bG9ja18xMjMh
+  S3_ACCESS_KEY: Y2hlYXRsb2NrX2FkbWlu
+  S3_SECRET_KEY: Y2hlYXRsb2NrX3NlY3JldA==
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cheatlock-backend
+  namespace: cheatlock
+  labels:
+    app: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: cheatlock/backend:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+        envFrom:
+        - configMapRef:
+            name: cheatlock-config
+        - secretRef:
+            name: cheatlock-secret
+        resources:
+          limits:
+            cpu: "1"
+            memory: 1Gi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-srv
+  namespace: cheatlock
+spec:
+  selector:
+    app: backend
+  ports:
+  - protocol: TCP
+    port: 3000
+    targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cheatlock-dashboard
+  namespace: cheatlock
+  labels:
+    app: dashboard
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+      - name: dashboard
+        image: cheatlock/dashboard:latest
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-srv
+  namespace: cheatlock
+spec:
+  selector:
+    app: dashboard
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: cheatlock
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cheatlock-backend
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cheatlock-ingress
+  namespace: cheatlock
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  rules:
+  - host: proctor.cheatlock.org
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-srv
+            port:
+              number: 3000
+      - path: /socket.io
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-srv
+            port:
+              number: 3000
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: dashboard-srv
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-network-policy
+  namespace: cheatlock
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+  policyTypes:
+  - Ingress

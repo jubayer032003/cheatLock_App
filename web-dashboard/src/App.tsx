@@ -13,6 +13,10 @@ import { ReportsPage } from "./pages/ReportsPage";
 import { ReplayTimelinePage } from "./pages/ReplayTimelinePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TeacherHomePage } from "./pages/TeacherHomePage";
+import { ModelDataCardPage } from "./pages/ModelDataCardPage";
+import { InstitutionManagementPage } from "./pages/InstitutionManagementPage";
+import { UserManagementPage } from "./pages/UserManagementPage";
+import { AuditLogsPage } from "./pages/AuditLogsPage";
 import { ShieldCheck } from "lucide-react";
 
 export default function App() {
@@ -75,6 +79,10 @@ export default function App() {
           <Route path="classes" element={<ClassesPage />} />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="model-card" element={<ModelDataCardPage />} />
+          <Route path="institution" element={<InstitutionManagementPage />} />
+          <Route path="users" element={<UserManagementPage />} />
+          <Route path="audit-logs" element={<AuditLogsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

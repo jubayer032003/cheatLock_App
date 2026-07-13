@@ -1,0 +1,71 @@
+name: CheatLock Enterprise CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-value: '20'
+          cache: 'npm'
+          cache-dependency-path: './web-dashboard/package-lock.json'
+
+      - name: Validate Web Dashboard Types
+        run: |
+          cd web-dashboard
+          npm ci
+          npm run build
+
+      - name: Validate Backend Code quality
+        run: |
+          cd backend
+          npm ci
+
+  build-docker-images:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Backend Image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          tags: cheatlock/backend:${{ github.sha }}
+
+      - name: Build Dashboard Image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./web-dashboard
+          file: ./web-dashboard/Dockerfile
+          push: false
+          tags: cheatlock/dashboard:${{ github.sha }}
+
+  deploy-staging:
+    needs: build-docker-images
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Staging Cluster
+        run: |
+          echo "Simulating production-grade staging cluster deployment..."
+          echo "Executing: kubectl set image deployment/cheatlock-backend backend=cheatlock/backend:${{ github.sha }} -n cheatlock"

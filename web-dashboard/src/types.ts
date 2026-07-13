@@ -174,6 +174,15 @@ export interface LiveStudent {
   previewBase64?: string;
   lastUpdatedAt?: number | string | null;
   lastSeenAt?: number | string | null;
+  screenBase64?: string;
+  lastScreenUpdatedAt?: number;
+  faceStatus?: string;
+  audioStatus?: string;
+  timeRemaining?: number;
+  focusStatus?: string;
+  clipboardStatus?: string;
+  multiMonitorStatus?: string;
+  violationsList?: Array<{ type: string; message: string; timestamp: number }>;
 }
 
 export interface LiveStudentListEvent {
@@ -186,7 +195,8 @@ export type ProctoringTestEventName =
   | "student_left_exam"
   | "suspicion_score_updated"
   | "ai_alert_created"
-  | "camera_preview_updated";
+  | "camera_preview_updated"
+  | "screen_telemetry_uploaded";
 
 export interface ProctoringTestEventRequest {
   eventName: ProctoringTestEventName;
@@ -231,6 +241,12 @@ export interface ProctoringTimelineResponse {
     status: ExamSessionStatus;
   };
   finalSuspicionScore: number;
+  review?: {
+    decision: IntegrityDecision;
+    notes: string;
+    bookmarks: string[];
+    reviewedEvents: string[];
+  } | null;
   timelineEvents: TimelineEvent[];
 }
 

@@ -2,7 +2,9 @@ import { Exam } from "../models/Exam.js";
 import { ExamSession } from "../models/ExamSession.js";
 import { ProctoringEvent } from "../models/ProctoringEvent.js";
 import { User } from "../models/User.js";
+import { Tenant } from "../models/Tenant.js";
 import { verifyToken } from "../middleware/auth.js";
+import { uploadFrame, getSignedFrameUrl } from "../services/s3.js";
 
 const STUDENT_EVENTS = [
   "student_joined_exam",
@@ -10,10 +12,43 @@ const STUDENT_EVENTS = [
   "suspicion_score_updated",
   "ai_alert_created",
   "camera_preview_updated",
+  "screen_telemetry_uploaded",
 ];
 
 export function isStudentProctoringEvent(eventName) {
   return STUDENT_EVENTS.includes(eventName);
+}
+
+function getWeightForAlert(alertText, weights) {
+  const text = String(alertText || "").toLowerCase();
+  if (text.includes("face not detected") || text.includes("looking away") || text.includes("face_missing") || text.includes("missing")) {
+    return weights.faceMissingWeight ?? 25;
+  }
+  if (text.includes("multiple faces") || text.includes("multiple detected") || text.includes("multiple")) {
+    return weights.multipleFacesWeight ?? 30;
+  }
+  if (text.includes("phone") || text.includes("mobile") || text.includes("device")) {
+    return weights.phoneDetectedWeight ?? 20;
+  }
+  if (text.includes("ambient noise") || text.includes("voice") || text.includes("speech") || text.includes("sound") || text.includes("talking") || text.includes("whisper")) {
+    return weights.speechDetectedWeight ?? 10;
+  }
+  if (text.includes("blurred") || text.includes("app switch") || text.includes("focus") || text.includes("tab")) {
+    return weights.repeatedSwitchWeight ?? 15;
+  }
+  if (text.includes("fullscreen") || text.includes("exited")) {
+    return weights.fullscreenExitWeight ?? 15;
+  }
+  if (text.includes("clipboard") || text.includes("copy") || text.includes("paste")) {
+    return weights.clipboardUsageWeight ?? 10;
+  }
+  if (text.includes("monitor") || text.includes("display") || text.includes("screen")) {
+    return weights.multiMonitorWeight ?? 25;
+  }
+  if (text.includes("liveness") || text.includes("fake")) {
+    return weights.livenessFailureWeight ?? 40;
+  }
+  return 5; // default minor infraction weight
 }
 
 export function configureProctoringSocket(io) {
@@ -36,6 +71,19 @@ export function configureProctoringSocket(io) {
         socket.join(room);
         acknowledge?.({ ok: true, room });
         socket.emit("live_student_list", await buildLiveStudentList(exam));
+      } catch (error) {
+        acknowledge?.({ ok: false, message: error.message });
+      }
+    });
+    
+    socket.on("teacher_command", async ({ studentId, examId, command, message }, acknowledge) => {
+      try {
+        if (socket.user.role !== "TEACHER") {
+          throw new Error("Only teachers can send proctoring commands.");
+        }
+        const room = roomName(examId);
+        io.to(room).emit("teacher_command", { studentId, examId, command, message });
+        acknowledge?.({ ok: true });
       } catch (error) {
         acknowledge?.({ ok: false, message: error.message });
       }
@@ -74,12 +122,46 @@ export async function handleStudentProctoringEvent(io, user, eventName, payload 
 
   const exam = await assertStudentCanSendEvent(user, examId, studentId);
   const now = Date.now();
-  const existingSession =
-    eventName === "camera_preview_updated"
-      ? await ExamSession.findOne({ examId: exam._id, studentId })
-          .select("lastPreviewEventLoggedAt")
-          .lean()
-      : null;
+  const existingSession = await ExamSession.findOne({ examId: exam._id, studentId }).lean();
+
+  // Retrieve tenant weights from the database configuration
+  const studentUser = await User.findOne({ identifier: studentId }).lean();
+  const tenant = studentUser?.tenantId ? await Tenant.findById(studentUser.tenantId).lean() : null;
+  const thresholds = tenant?.settings?.aiThresholds || {
+    faceMissingWeight: 25,
+    multipleFacesWeight: 30,
+    phoneDetectedWeight: 20,
+    speechDetectedWeight: 10,
+    repeatedSwitchWeight: 15,
+    fullscreenExitWeight: 15,
+    clipboardUsageWeight: 10,
+    multiMonitorWeight: 25,
+    livenessFailureWeight: 40,
+    decayRate: 0.4
+  };
+
+  // 1. Calculate score decay based on elapsed idle time
+  let computedScore = existingSession?.suspicionScore || 0;
+  const lastSeenAt = existingSession?.lastSeenAt || existingSession?.updatedAt || now;
+  const elapsedSeconds = Math.max(0, (now - lastSeenAt) / 1000);
+  if (elapsedSeconds > 5) {
+    const decay = (thresholds.decayRate || 0.4) * (elapsedSeconds - 5);
+    computedScore = Math.max(0, computedScore - decay);
+  }
+
+  // 2. Calculate weight additions or apply overriding on specific events
+  if (eventName === "ai_alert_created" || eventName === "screen_telemetry_uploaded") {
+    const alertMessage = String(payload.latestAlert || payload.alert || "");
+    const weight = getWeightForAlert(alertMessage, thresholds);
+    computedScore = Math.min(100, computedScore + weight);
+    payload.suspicionScore = computedScore;
+  } else if (eventName === "suspicion_score_updated") {
+    // Override client-side suspicion score updates with computed server-side score
+    payload.suspicionScore = computedScore;
+  } else {
+    payload.suspicionScore = computedScore;
+  }
+
   const shouldLogEvent =
     eventName !== "camera_preview_updated" ||
     !existingSession?.lastPreviewEventLoggedAt ||
@@ -88,6 +170,20 @@ export async function handleStudentProctoringEvent(io, user, eventName, payload 
   if (eventName === "camera_preview_updated" && shouldLogEvent) {
     patch.lastPreviewEventLoggedAt = now;
   }
+
+  // Upload live webcam snapshot to S3 bucket to avoid MongoDB bloat
+  if (eventName === "camera_preview_updated" && payload.previewBase64 && payload.previewBase64.length > 100) {
+    const key = `exams/${exam._id}/students/${studentId}/camera_live.jpg`;
+    try {
+      const s3Key = await uploadFrame(key, payload.previewBase64, "image/jpeg");
+      patch.previewBase64 = s3Key;
+    } catch (err) {
+      console.error(`S3 Live camera frame upload failed: ${err.message}`);
+    }
+  }
+
+  // Ensure computed score is written back into the session patch
+  patch.suspicionScore = computedScore;
 
   const session = await ExamSession.findOneAndUpdate(
     { examId: exam._id, studentId },
@@ -186,6 +282,15 @@ function buildEventPatch(eventName, payload) {
     };
   }
 
+  if (eventName === "screen_telemetry_uploaded") {
+    return {
+      status: "IN_PROGRESS",
+      onlineStatus: "ONLINE",
+      previewBase64: String(payload.base64 || ""),
+      latestAlert: "Desktop screen snapshot uploaded",
+    };
+  }
+
   return {};
 }
 
@@ -201,6 +306,16 @@ export async function buildLiveProctoringPayload(exam) {
 
 export async function broadcastSessionState(io, eventName, exam, session) {
   const student = serializeLiveStudent(session);
+  
+  // Sign S3 keys to temporary URLs if needed before broadcasting to the proctor console
+  if (student.previewBase64 && !student.previewBase64.startsWith("data:") && !student.previewBase64.startsWith("http")) {
+    try {
+      student.previewUrl = await getSignedFrameUrl(student.previewBase64);
+    } catch (err) {
+      console.error("Failed to sign frame URL for broadcast:", err);
+    }
+  }
+
   const room = roomName(exam._id.toString());
 
   console.log(`[Step 9] Backend: Broadcasting event: ${eventName} to room: ${room}. Time: ${Date.now()}`);
@@ -218,6 +333,23 @@ async function logProctoringEvent(exam, session, eventName, payload) {
     payload.latestAlert || payload.alert || session.latestAlert || eventLabel(eventName)
   );
 
+  const dbBase64 = eventName === "screen_telemetry_uploaded"
+    ? String(payload.base64 || "")
+    : String(payload.previewBase64 || session.previewBase64 || "");
+
+  let previewFieldVal = "";
+  if (dbBase64 && dbBase64.length > 100) {
+    const key = `exams/${exam._id}/students/${session.studentId}/${eventName}_${Date.now()}.jpg`;
+    try {
+      previewFieldVal = await uploadFrame(key, dbBase64, "image/jpeg");
+    } catch (err) {
+      console.error(`S3 Upload failed, falling back to raw Base64: ${err.message}`);
+      previewFieldVal = dbBase64;
+    }
+  } else {
+    previewFieldVal = dbBase64;
+  }
+
   await ProctoringEvent.create({
     examId: exam._id,
     studentId: session.studentId,
@@ -227,7 +359,7 @@ async function logProctoringEvent(exam, session, eventName, payload) {
     alertMessage,
     severity: severityFor(eventName, suspicionScore),
     previewUrl: String(payload.previewUrl || session.previewUrl || ""),
-    previewBase64: String(payload.previewBase64 || session.previewBase64 || ""),
+    previewBase64: previewFieldVal,
   });
 }
 
@@ -237,6 +369,7 @@ function eventLabel(eventName) {
   if (eventName === "suspicion_score_updated") return "Suspicion score updated";
   if (eventName === "ai_alert_created") return "AI alert created";
   if (eventName === "camera_preview_updated") return "Camera preview updated";
+  if (eventName === "screen_telemetry_uploaded") return "Desktop screen snapshot uploaded";
   return "Proctoring event";
 }
 

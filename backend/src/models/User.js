@@ -19,8 +19,39 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["STUDENT", "TEACHER"],
+      enum: [
+        "SUPER_ADMIN",
+        "INSTITUTION_ADMIN",
+        "DEPARTMENT_ADMIN",
+        "TEACHER",
+        "PROCTOR",
+        "STUDENT",
+        "OBSERVER",
+        "AUDITOR"
+      ],
       required: true,
+    },
+    tenantId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Tenant",
+      index: true,
+    },
+    status: {
+      type: String,
+      enum: ["ACTIVE", "SUSPENDED", "INACTIVE"],
+      default: "ACTIVE",
+    },
+    department: {
+      type: String,
+      default: "",
+    },
+    program: {
+      type: String,
+      default: "",
+    },
+    batch: {
+      type: String,
+      default: "",
     },
     faceProfile: {
       descriptor: {

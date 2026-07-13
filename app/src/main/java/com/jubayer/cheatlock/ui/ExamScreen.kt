@@ -45,6 +45,7 @@ import com.jubayer.cheatlock.model.ExamFinishReason
 import com.jubayer.cheatlock.model.ExamSubmission
 import com.jubayer.cheatlock.model.StudentAnswer
 import com.jubayer.cheatlock.model.QuestionType
+import com.jubayer.cheatlock.proctoring.VoiceActivityDetector
 import com.jubayer.cheatlock.ui.theme.*
 import java.lang.System.currentTimeMillis
 import kotlinx.coroutines.delay
@@ -58,7 +59,7 @@ fun ExamScreen(
     warningCount: Int,
     onFaceWarningsChanged: (Int) -> Unit,
     onCameraPreviewChanged: (String) -> Unit,
-    onPhoneDetected: () -> Unit,
+    onPhoneDetected: (String) -> Unit,
     onAudioWarning: () -> Unit,
     onSubmitExam: (ExamSubmission) -> Unit,
     onFinishExam: (List<StudentAnswer>, ExamFinishReason) -> Unit
@@ -96,6 +97,8 @@ fun ExamScreen(
     var isFinished by remember { mutableStateOf(false) }
     var monitoringEnabled by remember { mutableStateOf(false) }
     var cameraHardwareReady by remember { mutableStateOf(false) }
+    var isAudioCalibrating by remember { mutableStateOf(true) }
+    var audioCalibrationProgress by remember { mutableStateOf(0f) }
     val hasCameraPermission = remember {
         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
@@ -123,11 +126,18 @@ fun ExamScreen(
     val animatedTimeLeft by animateIntAsState(targetValue = timeLeft, animationSpec = tween(durationMillis = 500))
     val animatedQuestionTimeLeft by animateIntAsState(targetValue = questionTimeLeft, animationSpec = tween(durationMillis = 500))
 
-    // Short grace period so the camera can start before face warnings count
+    // Calibration and camera grace period
     LaunchedEffect(Unit) {
         delay(1000) 
         cameraHardwareReady = true
-        delay(1000)
+        // 5-second environment VAD calibration
+        var elapsed = 0f
+        while (elapsed < 5000f) {
+            delay(100)
+            elapsed += 100f
+            audioCalibrationProgress = elapsed / 5000f
+        }
+        isAudioCalibrating = false
         monitoringEnabled = true
     }
 
@@ -265,6 +275,7 @@ fun ExamScreen(
                 }
 
                 var lastAudioWarningAt = 0L
+                val vad = VoiceActivityDetector(sampleRate = 8000)
 
                 try {
                     recorder.startRecording()
@@ -278,27 +289,28 @@ fun ExamScreen(
                     while (recordingStarted && !isFinished) {
                         val read = recorder.read(buffer, 0, buffer.size)
                         if (read > 0) {
-                            var peak = 0
-                            for (i in 0 until read) {
-                                val absValue = kotlin.math.abs(buffer[i].toInt())
-                                if (absValue > peak) peak = absValue
-                            }
+                            // Process raw pcm buffer through offline DSP-VAD engine
+                            vad.processAudioBuffer(buffer, read)
+
                             val now = currentTimeMillis()
-                            if (monitoringEnabled && peak > 9000 && now - lastAudioWarningAt > 8000) {
+                            // Trigger speech warning if speech probability averages > 80% for > 5 seconds
+                            if (monitoringEnabled && !isAudioCalibrating && vad.isSpeechViolationTriggered() && now - lastAudioWarningAt > 8000) {
                                 audioWarnings++
                                 onAudioWarning()
                                 autoSaveProgress()
                                 lastAudioWarningAt = now
+                                vad.clearHistory()
                                 scope.launch(kotlinx.coroutines.Dispatchers.Main) {
                                     showWarningDialog = true
                                 }
                             }
+                        } else if (read == 0) {
+                            delay(40)
                         } else if (read < 0) {
                             // read returned an error code; microphone may have been revoked
                             Log.w("ExamScreen", "AudioRecord.read returned error: $read")
                             break
                         }
-                        delay(1000)
                     }
                 } finally {
                     runCatching { 
@@ -423,15 +435,58 @@ fun ExamScreen(
                                         }
                                     },
                                     onPreviewSnapshot = { onCameraPreviewChanged(it) },
-                                    onPhoneDetected = {
-                                        if (monitoringEnabled) {
-                                            val now = currentTimeMillis()
-                                            if (now - lastPhoneWarningTime > 8000) {
-                                                phoneWarnings++; lastPhoneWarningTime = now; onPhoneDetected(); autoSaveProgress(); showWarningDialog = true; haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            }
-                                        }
-                                    }
+                                    onPhoneDetectedWithLabels = { labels ->
+                                         if (monitoringEnabled) {
+                                             val now = currentTimeMillis()
+                                             if (now - lastPhoneWarningTime > 8000) {
+                                                 phoneWarnings++; lastPhoneWarningTime = now; onPhoneDetected(labels); autoSaveProgress(); showWarningDialog = true; haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                             }
+                                         }
+                                     }
                                 )
+                            }
+
+                            // Ambient Noise Floor Calibration Overlay
+                            if (isAudioCalibrating) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.85f))
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            imageVector = Icons.Default.VolumeUp, 
+                                            contentDescription = null, 
+                                            tint = CheatLockPurpleSoft, 
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                        Spacer(Modifier.height(10.dp))
+                                        Text(
+                                            text = "CALIBRATING AUDIO ENVIRONMENT",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Black,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            letterSpacing = 1.sp
+                                        )
+                                        Text(
+                                            text = "Please remain silent...",
+                                            color = CheatLockTextSecondaryDark,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        Spacer(Modifier.height(14.dp))
+                                        LinearProgressIndicator(
+                                            progress = { audioCalibrationProgress },
+                                            color = CheatLockPurpleVibrant,
+                                            trackColor = Color.White.copy(alpha = 0.2f),
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.85f)
+                                                .height(6.dp)
+                                                .clip(RoundedCornerShape(3.dp))
+                                        )
+                                    }
+                                }
                             }
 
                             // 1. Premium Camera Status HUD Overlay

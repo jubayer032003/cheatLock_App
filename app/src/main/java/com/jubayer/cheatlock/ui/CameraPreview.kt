@@ -22,10 +22,16 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
-import com.google.mlkit.vision.label.ImageLabel
-import com.google.mlkit.vision.label.ImageLabeling
-import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import com.jubayer.cheatlock.proctoring.FaceEmbeddingModel
+import com.jubayer.cheatlock.proctoring.DetectedObject
+import com.jubayer.cheatlock.proctoring.YOLOv8Detector
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.unit.dp
+import com.jubayer.cheatlock.ui.theme.CheatLockDanger
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.concurrent.Executor
@@ -40,21 +46,27 @@ fun CameraPreview(
     onFaceStatusChanged: (FaceStatus) -> Unit,
     onPreviewSnapshot: (String) -> Unit = {},
     onFaceDescriptorChanged: (List<Double>) -> Unit = {},
-    onPhoneDetected: () -> Unit = {}
+    onPhoneDetected: () -> Unit = {},
+    onFaceDetected: (Face) -> Unit = {},
+    onObjectsDetected: (List<DetectedObject>) -> Unit = {},
+    onPhoneDetectedWithLabels: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val mainExecutor = ContextCompat.getMainExecutor(context)
 
+    var detectedObjects by remember { mutableStateOf<List<DetectedObject>>(emptyList()) }
+
     // Key the view to the lifecycleOwner and startup preference
     key(lifecycleOwner, preferFastStartup) {
-        AndroidView(
-            modifier = modifier,
-            factory = { ctx ->
-                val previewView = PreviewView(ctx).apply {
-                    implementationMode = PreviewView.ImplementationMode.PERFORMANCE
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
-                }
+        Box(modifier = modifier) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    val previewView = PreviewView(ctx).apply {
+                        implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
+                    }
 
                 val faceEmbeddingModel = FaceEmbeddingModel(ctx.applicationContext)
                 val mainHandler = Handler(Looper.getMainLooper())
@@ -129,10 +141,12 @@ fun CameraPreview(
                         }
 
                         val detector = FaceDetection.getClient(detectorOptions)
-                        val labeler = ImageLabeling.getClient(ImageLabelerOptions.DEFAULT_OPTIONS)
+                        val yoloDetector = YOLOv8Detector(ctx.applicationContext)
+                        val yoloExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
                         cleanupCallbacks += {
                             detector.close()
-                            labeler.close()
+                            yoloDetector.close()
+                            yoloExecutor.shutdown()
                         }
 
                         val analysisExecutor: Executor = ContextCompat.getMainExecutor(ctx)
@@ -142,6 +156,7 @@ fun CameraPreview(
 
                         var lastStatus: FaceStatus? = null
                         var lastPhoneAlertAt = 0L
+                        var frameCounter = 0
 
                         imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
                             val mediaImage = imageProxy.image
@@ -155,6 +170,7 @@ fun CameraPreview(
                                 imageProxy.imageInfo.rotationDegrees
                             )
 
+                            // 1. Run face detection on YUV ImageProxy
                             val faceTask = detector.process(image)
                                 .addOnSuccessListener { faces ->
                                     val status = resolveFaceStatus(faces)
@@ -162,12 +178,14 @@ fun CameraPreview(
                                         lastStatus = status
                                         postStatus(status)
                                     }
-                                    if (!faceEmbeddingModel.isAvailable) {
-                                        faces.firstOrNull()
-                                            ?.toDescriptor(image.width, image.height)
-                                            ?.let { descriptor ->
-                                                mainHandler.post { onFaceDescriptorChanged(descriptor) }
-                                            }
+                                    faces.firstOrNull()?.let { face ->
+                                        mainHandler.post { onFaceDetected(face) }
+                                        if (!faceEmbeddingModel.isAvailable) {
+                                            face.toDescriptor(image.width, image.height)
+                                                .let { descriptor ->
+                                                    mainHandler.post { onFaceDescriptorChanged(descriptor) }
+                                                }
+                                        }
                                     }
                                 }
                                 .addOnFailureListener { error ->
@@ -175,22 +193,39 @@ fun CameraPreview(
                                     postStatus(FaceStatus.NO_FACE)
                                 }
 
-                            val labelTask = labeler.process(image)
-                                .addOnSuccessListener { labels ->
-                                    if (labels.hasPhoneLabel()) {
-                                        val now = System.currentTimeMillis()
-                                        if (now - lastPhoneAlertAt > 8000) {
-                                            lastPhoneAlertAt = now
-                                            mainHandler.post { onPhoneDetected() }
+                            // 2. Run YOLOv8 object detection on RGB preview bitmap (every 10 frames)
+                            val currentFrame = frameCounter++
+                            if (currentFrame % 10 == 0 && yoloDetector.isAvailable) {
+                                val bitmap = previewView.bitmap
+                                if (bitmap != null) {
+                                    yoloExecutor.execute {
+                                        try {
+                                            val detections = yoloDetector.detect(bitmap)
+                                            mainHandler.post {
+                                                detectedObjects = detections
+                                                onObjectsDetected(detections)
+                                                if (detections.isNotEmpty()) {
+                                                    val now = System.currentTimeMillis()
+                                                    if (now - lastPhoneAlertAt > 8000) {
+                                                        lastPhoneAlertAt = now
+                                                        // Call the old callback for backwards compatibility
+                                                        onPhoneDetected()
+                                                        // Call the label-specific metadata callback
+                                                        val labels = detections.map { it.label }.distinct().joinToString(", ")
+                                                        onPhoneDetectedWithLabels(labels)
+                                                    }
+                                                }
+                                            }
+                                        } catch (ex: Exception) {
+                                            Log.e(TAG, "YOLOv8 execution failed", ex)
+                                        } finally {
+                                            runCatching { bitmap.recycle() }
                                         }
                                     }
                                 }
-                                .addOnFailureListener { error ->
-                                    Log.e(TAG, "Labeling failed", error)
-                                }
+                            }
 
-                            Tasks.whenAllComplete(faceTask, labelTask)
-                                .addOnCompleteListener { imageProxy.close() }
+                            faceTask.addOnCompleteListener { imageProxy.close() }
                         }
 
                         val selectors = listOf(
@@ -234,7 +269,43 @@ fun CameraPreview(
                 previewView.setTag(null)
             }
         )
+
+        // Draw Bounding Boxes Overlay Internally
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            detectedObjects.forEach { obj ->
+                val left = obj.boundingBox.left * size.width
+                val top = obj.boundingBox.top * size.height
+                val right = obj.boundingBox.right * size.width
+                val bottom = obj.boundingBox.bottom * size.height
+
+                // Draw bounding box border
+                drawRect(
+                    color = CheatLockDanger,
+                    topLeft = androidx.compose.ui.geometry.Offset(left, top),
+                    size = androidx.compose.ui.geometry.Size(right - left, bottom - top),
+                    style = Stroke(width = 2.dp.toPx())
+                )
+
+                // Draw label background and text using native canvas
+                drawContext.canvas.nativeCanvas.apply {
+                    val textPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.RED
+                        textSize = 34f
+                        style = android.graphics.Paint.Style.FILL
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+                    }
+                    drawText(
+                        "${obj.label} ${(obj.confidence * 100).toInt()}%",
+                        left + 10f,
+                        top + 38f,
+                        textPaint
+                    )
+                }
+            }
+        }
     }
+}
 }
 
 private fun resolveFaceStatus(faces: List<Face>): FaceStatus {
@@ -290,16 +361,4 @@ private fun Face.toDescriptor(imageWidth: Int, imageHeight: Int): List<Double> {
         (leftEyeOpenProbability ?: 0.5f).toDouble(),
         (rightEyeOpenProbability ?: 0.5f).toDouble()
     )
-}
-
-private fun List<ImageLabel>.hasPhoneLabel(): Boolean {
-    return any { label ->
-        val text = label.text.lowercase(Locale.US)
-        label.confidence >= 0.55f && (
-            text.contains("phone") ||
-                text.contains("mobile") ||
-                text.contains("cellular") ||
-                text.contains("telephone")
-            )
-    }
 }
