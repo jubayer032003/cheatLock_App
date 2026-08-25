@@ -22,6 +22,10 @@ export class FramePipeline {
   // Schedulers
   private captureIntervalId: number | null = null;
   private telemetryIntervalId: number | null = null;
+  private telemetryTimerId: number | null = null;
+  private telemetryActive = false;
+  private telemetryCapturing = false;
+  private telemetrySequenceNumber = 0;
   private lastCaptureTime = 0;
   private measuredFps = 0;
   private frameCount = 0;
@@ -29,9 +33,9 @@ export class FramePipeline {
 
   // Listeners
   private aiListeners: ((frame: ImageFrame) => void)[] = [];
-  private telemetryListeners: ((base64Jpeg: string) => void)[] = [];
+  private telemetryListeners: ((base64Jpeg: string, metadata: { capturedAt: number; sequenceNumber: number }) => void)[] = [];
 
-  public start(videoEl: HTMLVideoElement) {
+  public start(videoEl: HTMLVideoElement, telemetryIntervalMs = 2000) {
     this.videoEl = videoEl;
     this.canvas = document.createElement("canvas");
     this.ctx = this.canvas.getContext("2d", { willReadFrequently: true });
@@ -59,10 +63,9 @@ export class FramePipeline {
       this.captureFrame();
     }, 100);
 
-    // Telemetry Event Loop (2 FPS -> every 500ms)
-    this.telemetryIntervalId = window.setInterval(() => {
-      this.dispatchTelemetryFrame();
-    }, 500);
+    // Telemetry Event Loop: low-frequency by default. Local analysis stays on
+    // the high-frequency capture loop; media upload should be policy-controlled.
+    this.startTelemetryLoop(telemetryIntervalMs);
   }
 
   public stop() {
@@ -74,6 +77,12 @@ export class FramePipeline {
       clearInterval(this.telemetryIntervalId);
       this.telemetryIntervalId = null;
     }
+    if (this.telemetryTimerId) {
+      clearTimeout(this.telemetryTimerId);
+      this.telemetryTimerId = null;
+    }
+    this.telemetryActive = false;
+    this.telemetryCapturing = false;
     if (this.fpsCalcIntervalId) {
       clearInterval(this.fpsCalcIntervalId);
       this.fpsCalcIntervalId = null;
@@ -95,11 +104,11 @@ export class FramePipeline {
     this.aiListeners = this.aiListeners.filter((l) => l !== callback);
   }
 
-  public registerTelemetryListener(callback: (base64Jpeg: string) => void) {
+  public registerTelemetryListener(callback: (base64Jpeg: string, metadata: { capturedAt: number; sequenceNumber: number }) => void) {
     this.telemetryListeners.push(callback);
   }
 
-  public unregisterTelemetryListener(callback: (base64Jpeg: string) => void) {
+  public unregisterTelemetryListener(callback: (base64Jpeg: string, metadata: { capturedAt: number; sequenceNumber: number }) => void) {
     this.telemetryListeners = this.telemetryListeners.filter((l) => l !== callback);
   }
 
@@ -164,12 +173,36 @@ export class FramePipeline {
     }
   }
 
+  private startTelemetryLoop(intervalMs: number) {
+    this.telemetryActive = true;
+    const runLoop = () => {
+      if (!this.telemetryActive) return;
+      const startedAt = Date.now();
+      if (!this.telemetryCapturing) {
+        this.telemetryCapturing = true;
+        try {
+          this.dispatchTelemetryFrame();
+        } finally {
+          this.telemetryCapturing = false;
+        }
+      }
+      if (!this.telemetryActive) return;
+      const elapsed = Date.now() - startedAt;
+      this.telemetryTimerId = window.setTimeout(runLoop, Math.max(0, intervalMs - elapsed));
+    };
+    this.telemetryTimerId = window.setTimeout(runLoop, 0);
+  }
+
   private dispatchTelemetryFrame() {
     if (!this.canvas || !this.telemetryCanvas || !this.telemetryCtx || !this.videoEl) return;
     if (this.videoEl.readyState < this.videoEl.HAVE_CURRENT_DATA) return;
 
     try {
-      // Scale down high-resolution frames to 320x240 on the offscreen canvas
+      // Scale high-resolution frames to a reviewable 16:9 preview without upscaling.
+      const targetWidth = Math.min(1280, this.canvas.width);
+      const targetHeight = Math.min(720, Math.round((targetWidth * this.canvas.height) / this.canvas.width));
+      this.telemetryCanvas.width = targetWidth;
+      this.telemetryCanvas.height = targetHeight;
       this.telemetryCtx.drawImage(
         this.canvas,
         0,
@@ -178,11 +211,13 @@ export class FramePipeline {
         this.canvas.height,
         0,
         0,
-        320,
-        240
+        targetWidth,
+        targetHeight
       );
-      const base64 = this.telemetryCanvas.toDataURL("image/jpeg", 0.5); // Optimized quality factor for low bandwidth
-      this.telemetryListeners.forEach((l) => l(base64));
+      const capturedAt = Date.now();
+      const base64 = this.telemetryCanvas.toDataURL("image/jpeg", 0.8);
+      const metadata = { capturedAt, sequenceNumber: this.telemetrySequenceNumber++ };
+      this.telemetryListeners.forEach((l) => l(base64, metadata));
     } catch {}
   }
 

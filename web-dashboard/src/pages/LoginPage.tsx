@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { Activity, Eye, EyeOff, LockKeyhole, ShieldCheck, Mail, User, Building } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { loginTeacher, signupTeacher } from "../lib/api";
+import { loginTeacher } from "../lib/api";
 import { saveAuth } from "../lib/auth";
 
 export function LoginPage() {
@@ -21,7 +21,6 @@ export function LoginPage() {
   const [institutionName, setInstitutionName] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [agreeToTerms, setAgreeToTerms] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   // Transition overlay state
@@ -32,22 +31,14 @@ export function LoginPage() {
     setError("");
 
     if (isSignupForm) {
-      if (!agreeToTerms) {
-        setError("You must agree to the Terms & Privacy Policy.");
-        return;
-      }
-      if (password !== confirmPassword) {
-        setError("Passwords do not match.");
-        return;
-      }
+      setError("Teacher accounts must be created by an administrator. Please sign in with an assigned account.");
+      return;
     }
 
     setLoading(true);
 
     try {
-      const data = isSignupForm
-        ? await signupTeacher(name, identifier, password)
-        : await loginTeacher(identifier, password);
+      const data = await loginTeacher(identifier, password);
       saveAuth(data.token, data.user);
       const nextPath = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname || "/";
       
@@ -226,6 +217,22 @@ export function LoginPage() {
           40% { opacity: 0; }
           100% { opacity: 1; transform: translateY(0); }
         }
+        @media (prefers-reduced-motion: reduce) {
+          .animate-float,
+          .animate-pulse-glow,
+          .animate-fade-in-up,
+          .animate-fade-in,
+          .animate-sweep,
+          .animate-reveal-text,
+          .animate-reveal-sub,
+          .particle,
+          .grid-3d-surface,
+          .logo-animate {
+            animation: none !important;
+            opacity: 1 !important;
+            transform: none !important;
+          }
+        }
       `}</style>
 
       <main className="app-background relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-8 perspective-1500">
@@ -235,11 +242,6 @@ export function LoginPage() {
           <div className="grid-fade-overlay" />
         </div>
 
-        {/* ---------- Animated Background Blobs ---------- */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
-          <div className="absolute top-[5%] left-[5%] w-96 h-96 rounded-full bg-purple-300/15 blur-[100px] dark:bg-purple-900/10 animate-blob" />
-          <div className="absolute bottom-[5%] right-[5%] w-[450px] h-[450px] rounded-full bg-blue-300/15 blur-[120px] dark:bg-indigo-950/10 animate-blob animation-delay-2000" />
-        </div>
 
         {/* ---------- Animated background particles ---------- */}
         <div className="pointer-events-none absolute inset-0 z-0">
@@ -294,8 +296,8 @@ export function LoginPage() {
 
                 <div className="relative z-10 preserve-3d">
                   <div className="flex items-center gap-3.5 animate-fade-in-up translate-z-md">
-                    <div className="logo-animate flex h-12 w-12 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur shadow-md">
-                      <ShieldCheck size={24} className="text-violet-300" />
+                    <div className="logo-animate flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl bg-[#020617] ring-1 ring-white/20 backdrop-blur shadow-md">
+                      <img src="/cheatlock-logo.png" alt="CheatLock logo" className="h-full w-full object-cover" />
                     </div>
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-wider text-violet-300 leading-none">CheatLock</p>
@@ -346,7 +348,7 @@ export function LoginPage() {
                 <div className="relative z-10 mt-8 animate-fade-in-up stagger-4 rounded-xl border border-white/10 bg-white/5 p-4 backdrop-blur translate-z-sm">
                   <p className="text-xs font-semibold text-violet-200">CheatLock Security Protocol</p>
                   <p className="mt-1 text-[11px] leading-relaxed text-slate-300">
-                    This dashboard uses bank-grade end-to-end encryption to secure student verification logs, keystroke signatures, and browser switches.
+                    This dashboard uses authenticated access and encrypted transport. Proctoring logs and session evidence may be collected for instructor review.
                   </p>
                 </div>
               </div>
@@ -356,8 +358,8 @@ export function LoginPage() {
                 <div className="w-full preserve-3d">
                   {/* Mobile Logo Header */}
                   <div className="flex flex-col items-center mb-6 lg:hidden animate-fade-in-up stagger-1 translate-z-md">
-                    <div className="logo-animate flex h-12 w-12 items-center justify-center rounded-xl border border-cyan-300/40 bg-cyan-400/15 text-cyan-700 dark:text-cyan-200">
-                      <ShieldCheck size={24} />
+                    <div className="logo-animate flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl border border-cyan-300/40 bg-[#020617]">
+                      <img src="/cheatlock-logo.png" alt="CheatLock logo" className="h-full w-full object-cover" />
                     </div>
                     <h1 className="mt-2 text-xl font-bold text-slate-950 dark:text-white">CheatLock</h1>
                     <p className="text-xs text-slate-500 dark:text-slate-400">AI Exam Monitoring Platform</p>
@@ -422,20 +424,9 @@ export function LoginPage() {
                       </label>
                     </div>
 
-                    {/* Form Options */}
-                    <div className="flex items-center justify-between animate-fade-in-up stagger-3 text-sm translate-z-sm">
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-600 dark:text-slate-400">
-                        <input
-                          type="checkbox"
-                          className="rounded border-slate-300 text-violet-600 focus:ring-violet-500 h-4 w-4"
-                          checked={rememberMe}
-                          onChange={(event) => setRememberMe(event.target.checked)}
-                        />
-                        <span>Remember Me</span>
-                      </label>
-                      <button type="button" className="text-violet-600 hover:underline focus:outline-none" onClick={() => alert("Password recovery requires administrator approval.")}>
-                        Forgot Password?
-                      </button>
+                    {/* Account recovery is administrator-managed in V1. */}
+                    <div className="animate-fade-in-up stagger-3 text-sm text-slate-500 dark:text-slate-400 translate-z-sm">
+                      Contact your institution administrator if you cannot access your account.
                     </div>
 
                     {error && !isSignupMode && (
@@ -467,17 +458,7 @@ export function LoginPage() {
                   {/* Toggle Link */}
                   <div className="mt-6 text-center animate-fade-in-up stagger-4 text-sm text-slate-600 dark:text-slate-400 translate-z-sm">
                     <span>
-                      Need to configure an account?{" "}
-                      <button
-                        type="button"
-                        className="font-bold text-violet-600 hover:underline focus:outline-none"
-                        onClick={() => {
-                          setIsSignupMode(true);
-                          setError("");
-                        }}
-                      >
-                        Create Teacher Account
-                      </button>
+                      Need a teacher account? Ask your institution administrator to create one.
                     </span>
                   </div>
 
@@ -515,8 +496,8 @@ export function LoginPage() {
 
                 <div className="relative z-10 preserve-3d">
                   <div className="flex items-center gap-3.5 animate-fade-in-up translate-z-md">
-                    <div className="logo-animate flex h-12 w-12 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur shadow-md">
-                      <ShieldCheck size={24} className="text-violet-300" />
+                    <div className="logo-animate flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl bg-[#020617] ring-1 ring-white/20 backdrop-blur shadow-md">
+                      <img src="/cheatlock-logo.png" alt="CheatLock logo" className="h-full w-full object-cover" />
                     </div>
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-wider text-violet-300 leading-none">CheatLock</p>
@@ -567,7 +548,7 @@ export function LoginPage() {
                 <div className="relative z-10 mt-8 animate-fade-in-up stagger-4 rounded-xl border border-white/10 bg-white/5 p-4 backdrop-blur translate-z-sm">
                   <p className="text-xs font-semibold text-violet-200">CheatLock Security Protocol</p>
                   <p className="mt-1 text-[11px] leading-relaxed text-slate-300">
-                    This dashboard uses bank-grade end-to-end encryption to secure student verification logs, keystroke signatures, and browser switches.
+                    This dashboard uses authenticated access and encrypted transport. Proctoring logs and session evidence may be collected for instructor review.
                   </p>
                 </div>
               </div>
@@ -577,8 +558,8 @@ export function LoginPage() {
                 <div className="w-full preserve-3d">
                   {/* Mobile Logo Header */}
                   <div className="flex flex-col items-center mb-6 lg:hidden animate-fade-in-up stagger-1 translate-z-md">
-                    <div className="logo-animate flex h-12 w-12 items-center justify-center rounded-xl border border-cyan-300/40 bg-cyan-400/15 text-cyan-700 dark:text-cyan-200">
-                      <ShieldCheck size={24} />
+                    <div className="logo-animate flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl border border-cyan-300/40 bg-[#020617]">
+                      <img src="/cheatlock-logo.png" alt="CheatLock logo" className="h-full w-full object-cover" />
                     </div>
                     <h1 className="mt-2 text-xl font-bold text-slate-950 dark:text-white">CheatLock</h1>
                     <p className="text-xs text-slate-500 dark:text-slate-400">AI Exam Monitoring Platform</p>
@@ -587,10 +568,10 @@ export function LoginPage() {
                   {/* Form Title */}
                   <div className="mb-6 animate-fade-in-up stagger-1 translate-z-md">
                     <h2 className="text-3xl font-extrabold text-slate-950 dark:text-white tracking-tight">
-                      Create Teacher Account
+                      Teacher Account Access
                     </h2>
                     <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
-                      Register as an examiner to secure your curriculum.
+                      Teacher accounts are created by an administrator.
                     </p>
                   </div>
 
@@ -739,7 +720,7 @@ export function LoginPage() {
                       type="submit"
                     >
                       <span className={`flex items-center justify-center gap-2 transition-opacity ${loading ? "opacity-0" : "opacity-100"}`}>
-                        Create Account
+                        Contact Administrator
                       </span>
                       {loading && (
                         <span className="absolute inset-0 flex items-center justify-center bg-violet-600">
@@ -803,6 +784,6 @@ function readErrorMessage(error: unknown, isSignupMode: boolean) {
   }
 
   return isSignupMode
-    ? "Could not create the backend teacher account. The email might already be registered, or the database is starting up."
+    ? "Teacher accounts must be created by an administrator."
     : "Teacher account was not found in the backend, or the password is wrong.";
 }

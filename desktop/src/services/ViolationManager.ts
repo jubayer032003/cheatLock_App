@@ -1,4 +1,4 @@
-export type VoiceViolationType = "VOICE_DETECTED" | "CONTINUOUS_SPEECH" | "MIC_DISCONNECTED" | "MIC_MUTED";
+export type VoiceViolationType = "VOICE_DETECTED" | "CONTINUOUS_SPEECH" | "VOICE_CLEARED" | "MIC_DISCONNECTED" | "MIC_MUTED";
 
 export interface VoiceViolationEvent {
   type: VoiceViolationType;
@@ -76,6 +76,17 @@ export class ViolationManager {
         });
       }
     } else {
+      // Voice state lifecycle: IDLE -> VOICE_DETECTED -> CONTINUOUS_SPEECH (if threshold reached) -> VOICE_CLEARED -> IDLE
+      if (this.voiceDetectedFired || this.continuousSpeechFired) {
+        this.emit({
+          type: "VOICE_CLEARED",
+          speechProbability,
+          consecutiveSeconds: 0,
+          message: "Speech cleared from exam environment.",
+          timestamp: now,
+        });
+      }
+
       // Reset counters when speech drops below threshold
       this.consecutiveSpeechSeconds = 0;
       this.voiceDetectedFired = false;

@@ -4,8 +4,9 @@ import { useToast } from "../hooks/useToast";
 import { SecurityService } from "../services/SecurityService";
 import { SessionService } from "../services/SessionService";
 import { useSuspicion } from "./SuspicionContext";
+import { suspicionScoreEngine } from "../services/SuspicionScoreEngine";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { invoke, isTauriAvailable } from "../utils/tauri";
+import { invoke, isTauriAvailable, getCurrentWindow } from "../utils/tauri";
 
 export interface SecurityViolation {
   type: string;
@@ -36,6 +37,7 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
   const violationsRef = useRef<SecurityViolation[]>([]);
   const securityIntervalRef = useRef<any>(null);
   const unlistenFullscreenRef = useRef<(() => void) | null>(null);
+  const fullscreenCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep ref in sync so callbacks can access latest arrays without state re-binding
   useEffect(() => {
@@ -58,10 +60,14 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
     reportViolationEvent(type, "Security", 1.0, message);
 
     // Auto lock session if score gets too high (e.g. >= 75%)
-    if (globalSuspicionScore >= 75) {
+    if (suspicionScoreEngine.getScore() >= 75) {
       showToast("Security threshold exceeded. Testing locked.", "error", 6000);
       try {
-        await SessionService.lockSession(examId, "Too many workspace focus/peripheral violations.");
+        await SessionService.lockSession(
+          examId,
+          "Too many workspace focus/peripheral violations.",
+          suspicionScoreEngine.getScore()
+        );
       } catch (err) {
         console.error("[Security] Kiosk lock call failed:", err);
       }
@@ -92,7 +98,9 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
 
       const handleFullscreenChange = () => {
         if (!document.fullscreenElement) {
-          handleViolation("FULLSCREEN_EXIT", "Candidate exited fullscreen exam window.");
+          handleViolation("FULLSCREEN_EXITED", "Candidate exited fullscreen exam window.");
+          // Auto-restore browser fullscreen
+          document.documentElement.requestFullscreen?.().catch(() => {});
         }
       };
 
@@ -111,7 +119,7 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
         unlistenFocusRef.current = await listen<boolean>("window-focus-changed", (event) => {
           const focused = event.payload;
           if (!focused) {
-            handleViolation("FOCUS_LOSS", "Exam window lost active focus.");
+            handleViolation("WINDOW_BLURRED", "Exam window lost active focus.");
           } else {
             // Check monitors count on refocused window
             invoke<number>("check_monitors").then((count) => {
@@ -127,7 +135,7 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
     } else {
       // Browser fallback: Monitor window focus losses
       const handleBrowserBlur = () => {
-        handleViolation("FOCUS_LOSS", "Exam browser tab lost active focus. [Browser Mode]");
+        handleViolation("WINDOW_BLURRED", "Exam browser tab lost active focus. [Browser Mode]");
       };
       window.addEventListener("blur", handleBrowserBlur);
       unlistenFocusRef.current = () => {
@@ -139,6 +147,34 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
     SecurityService.initialize({
       onViolation: (type, msg) => handleViolation(type, msg),
     });
+
+    // 4b. Layer 2: Periodic fullscreen state verification (~1 second)
+    if (fullscreenCheckRef.current) {
+      clearInterval(fullscreenCheckRef.current);
+    }
+    fullscreenCheckRef.current = setInterval(async () => {
+      try {
+        if (isTauriAvailable()) {
+          const isFs = await getCurrentWindow().isFullscreen();
+          if (!isFs) {
+            handleViolation("FULLSCREEN_EXITED", "Periodic check: candidate exited fullscreen exam window.");
+            // Auto-restore fullscreen
+            try {
+              await getCurrentWindow().setFullscreen(true);
+            } catch (restoreErr) {
+              console.warn("[Security] Fullscreen restore failed:", restoreErr);
+            }
+          }
+        } else {
+          if (!document.fullscreenElement) {
+            handleViolation("FULLSCREEN_EXITED", "Periodic check: candidate exited fullscreen exam window. [Browser Mode]");
+            document.documentElement.requestFullscreen?.().catch(() => {});
+          }
+        }
+      } catch (err) {
+        console.warn("[Security] Periodic fullscreen check error:", err);
+      }
+    }, 1000);
 
     // Check display counts on entrance
     if (isTauriAvailable()) {
@@ -224,6 +260,12 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
     if (securityIntervalRef.current) {
       clearInterval(securityIntervalRef.current);
       securityIntervalRef.current = null;
+    }
+
+    // 5. Clear periodic fullscreen verification interval
+    if (fullscreenCheckRef.current) {
+      clearInterval(fullscreenCheckRef.current);
+      fullscreenCheckRef.current = null;
     }
   };
 

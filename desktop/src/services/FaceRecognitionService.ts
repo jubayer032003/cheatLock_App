@@ -166,15 +166,16 @@ export class FaceRecognitionService {
       };
     }
 
-    // If no registered face descriptor is active (e.g. before login checkouts), skip comparison
+    // Missing registered descriptors must fail closed. Identity setup must be
+    // handled outside proctored matching.
     if (!this.registeredDescriptor) {
       return {
-        status: "FACE_MATCH", // Treat as match for verification setup pages
+        status: "FACE_MISMATCH",
         primaryFaceBox: primaryBox,
         allFaceBoxes: allBoxes,
-        distance: 0,
-        similarity: 100,
-        message: "Webcam active (biometric profile setup mode).",
+        distance: Number.POSITIVE_INFINITY,
+        similarity: 0,
+        message: "No verified face profile is available for this student.",
       };
     }
 

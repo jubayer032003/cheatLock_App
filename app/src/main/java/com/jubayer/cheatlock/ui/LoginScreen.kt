@@ -8,6 +8,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -17,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -24,6 +28,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -33,6 +38,17 @@ import com.jubayer.cheatlock.model.UserRole
 import com.jubayer.cheatlock.ui.theme.*
 import com.jubayer.cheatlock.util.IdentifierNormalizer
 import kotlinx.coroutines.launch
+
+private val AuthBackground = Color(0xFF050A14)
+private val AuthBackgroundSecondary = Color(0xFF07101F)
+private val AuthSurface = Color(0xFF09172A)
+private val AuthBrand = Color(0xFF087CFF)
+private val AuthBrandBright = Color(0xFF169BFF)
+private val AuthBrandCyan = Color(0xFF16B8FF)
+private val AuthTextPrimary = Color(0xFFF5F8FF)
+private val AuthTextSecondary = Color(0xFFA7B3C7)
+private val AuthTextMuted = Color(0xFF718096)
+private val AuthBorder = Color(0xFF5078AA)
 
 /**
  * Professional Login & Registration Screen
@@ -75,16 +91,21 @@ fun LoginScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .padding(horizontal = 24.dp, vertical = 40.dp)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp)
+                    .padding(top = 22.dp, bottom = 28.dp)
                     .verticalScroll(rememberScrollState())
                     .imePadding(),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(28.dp)
+                verticalArrangement = Arrangement.spacedBy(26.dp)
             ) {
                 // Premium Animated Header
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
                         horizontalArrangement = Arrangement.Start
                     ) {
                         IconButton(
@@ -92,19 +113,15 @@ fun LoginScreen(
                             modifier = Modifier
                                 .size(44.dp)
                                 .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.05f))
+                                .background(AuthSurface.copy(alpha = 0.66f))
+                                .border(1.dp, AuthBorder.copy(alpha = 0.28f), CircleShape)
                         ) {
-                            Icon(Icons.Default.ArrowBack, "Back", tint = Color.White, modifier = Modifier.size(20.dp))
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = AuthTextPrimary, modifier = Modifier.size(21.dp))
                         }
                     }
                     
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(130.dp)) {
-                        val transition = rememberInfiniteTransition(label = "rings")
-                        val rotation by transition.animateFloat(
-                            initialValue = 0f, targetValue = 360f,
-                            animationSpec = infiniteRepeatable(tween(8000, easing = LinearEasing)),
-                            label = "rotation"
-                        )
+                        val transition = rememberInfiniteTransition(label = "auth-brand-rings")
                         val pulse by transition.animateFloat(
                             initialValue = 1f, targetValue = 1.1f,
                             animationSpec = infiniteRepeatable(tween(2000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
@@ -113,37 +130,34 @@ fun LoginScreen(
                         
                         Canvas(modifier = Modifier.fillMaxSize().scale(pulse)) {
                             drawCircle(
-                                color = CheatLockPurpleVibrant.copy(alpha = 0.1f),
+                                color = AuthBrand.copy(alpha = 0.12f),
                                 style = Stroke(width = 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 12f), 0f))
                             )
-                            rotate(rotation) {
-                                drawArc(
-                                    color = CheatLockPurpleVibrant,
-                                    startAngle = 0f, sweepAngle = 120f, useCenter = false,
-                                    style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-                                )
-                                drawArc(
-                                    color = CheatLockPurpleSoft.copy(alpha = 0.5f),
-                                    startAngle = 200f, sweepAngle = 60f, useCenter = false,
-                                    style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
-                                )
-                            }
+                            drawCircle(
+                                color = AuthBrandCyan.copy(alpha = 0.055f),
+                                radius = size.minDimension * 0.38f,
+                                style = Stroke(width = 1.dp.toPx())
+                            )
+                            drawArc(
+                                color = AuthBrand.copy(alpha = 0.62f),
+                                startAngle = 216f, sweepAngle = 82f, useCenter = false,
+                                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+                            )
                         }
                         
                         Image(
-                            painter = painterResource(id = com.jubayer.cheatlock.R.drawable.ic_logo_emblem),
+                            painter = painterResource(id = com.jubayer.cheatlock.R.drawable.cheatlock_logo_sidebar_svg),
                             contentDescription = "CheatLock Emblem",
-                            modifier = Modifier.size(72.dp)
+                            modifier = Modifier.size(104.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.height(24.dp))
-                    SparklingBrandText(text = "CHEATLOCK", style = MaterialTheme.typography.displaySmall)
+                    Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = "Professional Exam Integrity System",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CheatLockTextSecondaryDark,
-                        letterSpacing = 2.sp,
-                        fontWeight = FontWeight.Medium
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = AuthTextSecondary,
+                        fontWeight = FontWeight.Normal,
+                        textAlign = TextAlign.Center
                     )
                 }
 
@@ -159,24 +173,37 @@ fun LoginScreen(
                     },
                     label = "auth-mode"
                 ) { signupMode ->
-                    PremiumCard {
+                    AuthPanel {
                         Column(
-                            modifier = Modifier.padding(8.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(22.dp)
+                            verticalArrangement = Arrangement.spacedBy(18.dp)
                         ) {
                             Text(
                                 text = if (signupMode) "Create Your Account" else "Welcome Back",
                                 style = MaterialTheme.typography.headlineSmall,
-                                color = Color.White,
+                                color = AuthTextPrimary,
                                 fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = (-0.5).sp
+                                textAlign = TextAlign.Center
                             )
+                            if (signupMode) {
+                                Text(
+                                    text = "Join thousands of educators and students trusting CheatLock",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = AuthTextSecondary,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 22.sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                )
+                            }
 
-                            LoginAdvancedRoleToggle(selectedRole) { selectedRole = it }
+                            LoginAdvancedRoleToggle(
+                                selectedRole = selectedRole,
+                                allowTeacher = true
+                            ) { selectedRole = it }
 
                             if (signupMode) {
-                                PremiumOutlinedTextField(
+                                AuthOutlinedTextField(
                                     value = name,
                                     onValueChange = { name = it },
                                     label = "Your Full Name",
@@ -184,14 +211,14 @@ fun LoginScreen(
                                 )
                             }
 
-                            PremiumOutlinedTextField(
+                            AuthOutlinedTextField(
                                 value = identifier,
                                 onValueChange = { identifier = it },
                                 label = "Student or Teacher ID",
                                 leadingIcon = Icons.Default.Badge
                             )
 
-                            PremiumOutlinedTextField(
+                            AuthOutlinedTextField(
                                 value = password,
                                 onValueChange = { password = it },
                                 label = "Password",
@@ -202,7 +229,7 @@ fun LoginScreen(
                             )
 
                             if (signupMode) {
-                                PremiumOutlinedTextField(
+                                AuthOutlinedTextField(
                                     value = confirmPassword,
                                     onValueChange = { confirmPassword = it },
                                     label = "Confirm Password",
@@ -213,12 +240,12 @@ fun LoginScreen(
                                 )
                             }
 
-                            GradientPrimaryButton(
+                            AuthPrimaryButton(
                                 text = if (signupMode) "REGISTER NOW" else "SIGN IN",
                                 onClick = {
                                     if (identifier.isBlank() || password.isBlank()) {
                                         message = "Please enter your ID and password."
-                                        return@GradientPrimaryButton
+                                        return@AuthPrimaryButton
                                     }
                                     isLoading = true
                                     message = null
@@ -239,16 +266,24 @@ fun LoginScreen(
                                     }
                                 },
                                 loading = isLoading,
-                                leadingIcon = if (signupMode) Icons.Default.PersonAdd else Icons.Default.Login
+                                leadingIcon = if (signupMode) Icons.Default.PersonAdd else Icons.AutoMirrored.Filled.Login
                             )
 
                             TextButton(onClick = { isSignupMode = !isSignupMode; message = null }) {
                                 Text(
-                                    text = if (signupMode) "Already have an account? Sign in here" else "New to CheatLock? Register here",
-                                    color = CheatLockPurpleSoft,
+                                    text = if (signupMode) "Already have an account? Login" else "New to CheatLock? Register here",
+                                    color = AuthBrandBright,
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp
                                 )
+                            }
+
+                            if (signupMode) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = 4.dp),
+                                    color = AuthBorder.copy(alpha = 0.16f)
+                                )
+                                RegistrationTrustIndicators()
                             }
                         }
                     }
@@ -283,34 +318,261 @@ fun LoginScreen(
 
 @Composable
 private fun LoginDecorativeNebula() {
-    val transition = rememberInfiniteTransition(label = "login_nebula")
-    val driftA by transition.animateFloat(
-        initialValue = 0f, targetValue = 50f,
-        animationSpec = infiniteRepeatable(tween(7000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "driftA"
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        AuthBackgroundSecondary,
+                        AuthBackground,
+                        Color(0xFF040912)
+                    )
+                )
+            )
     )
-
     Canvas(modifier = Modifier.fillMaxSize()) {
+        val brandCenter = Offset(size.width * 0.5f, size.height * 0.18f)
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(CheatLockPurpleVibrant.copy(alpha = 0.05f), Color.Transparent),
-                center = Offset(size.width * 0.8f, size.height * 0.1f + driftA.dp.toPx()),
-                radius = size.width * 0.8f
+                colors = listOf(
+                    AuthBrand.copy(alpha = 0.13f),
+                    AuthBrand.copy(alpha = 0.06f),
+                    Color.Transparent
+                ),
+                center = brandCenter,
+                radius = size.minDimension * 0.56f
             )
         )
+
+        val ringRadius = size.minDimension * 0.28f
+        repeat(4) { index ->
+            drawCircle(
+                color = AuthBrand.copy(alpha = 0.105f - index * 0.02f),
+                center = brandCenter,
+                radius = ringRadius + index * 24.dp.toPx(),
+                style = Stroke(
+                    width = 1.dp.toPx(),
+                    pathEffect = if (index % 2 == 0) PathEffect.dashPathEffect(floatArrayOf(7f, 12f), 0f) else null
+                )
+            )
+        }
+
+        val lineColor = AuthBrandCyan.copy(alpha = 0.07f)
+        val yBase = size.height * 0.20f
+        repeat(4) { row ->
+            val y = yBase + row * 32.dp.toPx()
+            drawLine(
+                color = lineColor,
+                start = Offset(size.width * 0.08f, y),
+                end = Offset(size.width * 0.32f, y),
+                strokeWidth = 1.dp.toPx()
+            )
+            drawLine(
+                color = lineColor,
+                start = Offset(size.width * 0.68f, y + 10.dp.toPx()),
+                end = Offset(size.width * 0.92f, y + 10.dp.toPx()),
+                strokeWidth = 1.dp.toPx()
+            )
+        }
+
+        val dots = listOf(
+            Offset(0.14f, 0.16f), Offset(0.22f, 0.22f), Offset(0.31f, 0.13f),
+            Offset(0.42f, 0.25f), Offset(0.58f, 0.12f), Offset(0.70f, 0.21f),
+            Offset(0.84f, 0.16f), Offset(0.17f, 0.34f), Offset(0.29f, 0.40f),
+            Offset(0.73f, 0.35f), Offset(0.86f, 0.43f), Offset(0.11f, 0.76f),
+            Offset(0.25f, 0.82f), Offset(0.39f, 0.88f), Offset(0.56f, 0.79f),
+            Offset(0.72f, 0.86f), Offset(0.88f, 0.78f), Offset(0.49f, 0.92f)
+        )
+        dots.forEachIndexed { index, dot ->
+            drawCircle(
+                color = if (index % 4 == 0) AuthBrandCyan.copy(alpha = 0.18f) else AuthBrand.copy(alpha = 0.12f),
+                radius = if (index % 5 == 0) 1.4.dp.toPx() else 0.9.dp.toPx(),
+                center = Offset(dot.x * size.width, dot.y * size.height)
+            )
+        }
     }
 }
 
 @Composable
-private fun LoginAdvancedRoleToggle(selectedRole: UserRole, onRoleSelected: (UserRole) -> Unit) {
+private fun AuthPanel(content: @Composable BoxScope.() -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        AuthSurface.copy(alpha = 0.74f),
+                        Color(0xFF050F1D).copy(alpha = 0.86f)
+                    )
+                )
+            )
+            .border(1.dp, AuthBorder.copy(alpha = 0.30f), RoundedCornerShape(22.dp))
+            .padding(18.dp),
+        content = content
+    )
+}
+
+@Composable
+private fun AuthOutlinedTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    leadingIcon: ImageVector? = null,
+    isPassword: Boolean = false,
+    passwordVisible: Boolean = false,
+    onVisibilityToggle: (() -> Unit)? = null
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        leadingIcon = leadingIcon?.let { icon ->
+            { Icon(icon, contentDescription = null, tint = AuthBrandBright, modifier = Modifier.size(24.dp)) }
+        },
+        trailingIcon = {
+            if (isPassword && onVisibilityToggle != null) {
+                IconButton(onClick = onVisibilityToggle) {
+                    Icon(
+                        imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                        tint = AuthTextSecondary
+                    )
+                }
+            }
+        },
+        visualTransformation = if (isPassword && !passwordVisible) PasswordVisualTransformation() else VisualTransformation.None,
+        singleLine = true,
+        shape = RoundedCornerShape(14.dp),
+        colors = TextFieldDefaults.colors(
+            focusedTextColor = AuthTextPrimary,
+            unfocusedTextColor = AuthTextPrimary,
+            focusedContainerColor = AuthSurface.copy(alpha = 0.56f),
+            unfocusedContainerColor = AuthSurface.copy(alpha = 0.48f),
+            focusedIndicatorColor = AuthBrand.copy(alpha = 0.80f),
+            unfocusedIndicatorColor = AuthBorder.copy(alpha = 0.28f),
+            focusedLabelColor = AuthTextSecondary,
+            unfocusedLabelColor = AuthTextSecondary,
+            cursorColor = AuthBrandCyan
+        ),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(64.dp)
+    )
+}
+
+@Composable
+private fun AuthPrimaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+    leadingIcon: ImageVector? = null
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled && !loading,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(58.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+        contentPadding = PaddingValues(0.dp),
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(14.dp))
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color(0xFF075BFF),
+                            AuthBrand,
+                            AuthBrandCyan
+                        )
+                    )
+                )
+                .border(1.dp, AuthBrandCyan.copy(alpha = 0.55f), RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (loading) {
+                CircularProgressIndicator(color = AuthTextPrimary, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                    if (leadingIcon != null) {
+                        Icon(leadingIcon, contentDescription = null, tint = AuthTextPrimary, modifier = Modifier.size(24.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
+                    }
+                    Text(
+                        text = text,
+                        color = AuthTextPrimary,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.6.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RegistrationTrustIndicators() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        RegistrationTrustItem("Secure", "Your data is encrypted\nand protected", Icons.Default.EnhancedEncryption, Modifier.weight(1f))
+        RegistrationTrustItem("Monitor", "AI-powered monitoring\nand proctoring", Icons.Default.Adjust, Modifier.weight(1f))
+        RegistrationTrustItem("Trust", "Ensuring fairness and\nacademic integrity", Icons.Default.VerifiedUser, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun RegistrationTrustItem(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(AuthBrand.copy(alpha = 0.12f))
+                .border(1.dp, AuthBrand.copy(alpha = 0.30f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = AuthBrandBright, modifier = Modifier.size(26.dp))
+        }
+        Text(title, color = AuthTextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp, textAlign = TextAlign.Center)
+        Text(subtitle, color = AuthTextSecondary, fontSize = 10.sp, lineHeight = 15.sp, textAlign = TextAlign.Center)
+    }
+}
+
+@Composable
+private fun LoginAdvancedRoleToggle(
+    selectedRole: UserRole,
+    allowTeacher: Boolean,
+    onRoleSelected: (UserRole) -> Unit
+) {
     val studentSelected = selectedRole == UserRole.STUDENT
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(54.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(alpha = 0.03f))
-            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+            .background(AuthSurface.copy(alpha = 0.56f))
+            .border(1.dp, AuthBorder.copy(alpha = 0.22f), RoundedCornerShape(14.dp))
             .padding(4.dp)
     ) {
         Box(
@@ -318,34 +580,64 @@ private fun LoginAdvancedRoleToggle(selectedRole: UserRole, onRoleSelected: (Use
                 .weight(1f)
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(11.dp))
-                .background(if (studentSelected) CheatLockPurpleVibrant else Color.Transparent)
+                .background(
+                    if (studentSelected) {
+                        Brush.horizontalGradient(listOf(Color(0xFF075BFF), AuthBrand))
+                    } else {
+                        Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))
+                    }
+                )
+                .border(
+                    1.dp,
+                    if (studentSelected) AuthBrandCyan.copy(alpha = 0.34f) else Color.Transparent,
+                    RoundedCornerShape(11.dp)
+                )
                 .clickable { onRoleSelected(UserRole.STUDENT) },
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                "STUDENT",
-                color = if (studentSelected) Color.White else CheatLockTextSecondaryDark,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 11.sp,
-                letterSpacing = 1.sp
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                Icon(Icons.Default.School, contentDescription = null, tint = if (studentSelected) AuthBrandCyan else AuthTextSecondary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "STUDENT",
+                    color = if (studentSelected) AuthTextPrimary else AuthTextSecondary,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp,
+                    letterSpacing = 0.8.sp
+                )
+            }
         }
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(11.dp))
-                .background(if (!studentSelected) CheatLockPurpleVibrant else Color.Transparent)
-                .clickable { onRoleSelected(UserRole.TEACHER) },
+                .background(
+                    if (!studentSelected) {
+                        Brush.horizontalGradient(listOf(Color(0xFF075BFF), AuthBrand))
+                    } else {
+                        Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))
+                    }
+                )
+                .border(
+                    1.dp,
+                    if (!studentSelected) AuthBrandCyan.copy(alpha = 0.34f) else Color.Transparent,
+                    RoundedCornerShape(11.dp)
+                )
+                .clickable(enabled = allowTeacher) { onRoleSelected(UserRole.TEACHER) },
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                "TEACHER",
-                color = if (!studentSelected) Color.White else CheatLockTextSecondaryDark,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 11.sp,
-                letterSpacing = 1.sp
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                Icon(Icons.Default.PersonOutline, contentDescription = null, tint = if (!studentSelected && allowTeacher) AuthBrandCyan else AuthTextSecondary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "TEACHER",
+                    color = if (!studentSelected && allowTeacher) AuthTextPrimary else AuthTextSecondary,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp,
+                    letterSpacing = 0.8.sp
+                )
+            }
         }
     }
 }

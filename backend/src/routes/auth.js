@@ -1,26 +1,32 @@
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
 import express from "express";
 import jwt from "jsonwebtoken";
+import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { loginRateLimiter, passwordResetRateLimiter, signupRateLimiter } from "../middleware/rateLimiter.js";
 import { User } from "../models/User.js";
+import { logger } from "../services/logger.js";
+import { deleteStudentAccount } from "../services/accountDeletion.js";
 
 export const authRouter = express.Router();
 
-authRouter.post("/signup", async (req, res, next) => {
+authRouter.post("/signup", signupRateLimiter, async (req, res, next) => {
   try {
     const { name, identifier: rawIdentifier, password, role: rawRole } = req.body;
     const identifier = normalizeIdentifier(rawIdentifier);
-    const role = String(rawRole || "").toUpperCase().trim();
+    const requestedRole = String(rawRole || "").toUpperCase().trim();
+    const role = "STUDENT";
 
-    if (!name || !identifier || !password || !role) {
-      const error = new Error("Name, identifier, password, and role are required.");
+    if (!name || !identifier || !password) {
+      const error = new Error("Name, identifier, and password are required.");
       error.status = 400;
       throw error;
     }
 
-    if (!["STUDENT", "TEACHER"].includes(role)) {
-      const error = new Error("Invalid role.");
-      error.status = 400;
+    if (requestedRole && requestedRole !== "STUDENT") {
+      const error = new Error("Public signup is available for student accounts only. Staff accounts must be created by an administrator.");
+      error.status = 403;
       throw error;
     }
 
@@ -48,9 +54,10 @@ authRouter.post("/signup", async (req, res, next) => {
         sub: user._id.toString(),
         identifier: user.identifier,
         role: user.role,
+        tokenVersion: user.tokenVersion || 0,
       },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+      config.jwt.secret(),
+      { expiresIn: config.jwt.expiresIn }
     );
 
     res.status(201).json({
@@ -62,17 +69,13 @@ authRouter.post("/signup", async (req, res, next) => {
   }
 });
 
-authRouter.post("/login", async (req, res, next) => {
+authRouter.post("/login", loginRateLimiter, async (req, res, next) => {
   try {
     const { identifier: rawIdentifier, email, password, role: rawRole } = req.body;
     const identifier = normalizeIdentifier(rawIdentifier || email);
     const role = String(rawRole || "").toUpperCase().trim();
 
-    console.debug("[auth.login] incoming request", {
-      ip: req.ip,
-      identifier: identifier ? identifier.replace(/(.+)@(.+)/, "***@***") : null,
-      role,
-    });
+    logger.debug("Login attempt received.", { role, hasIdentifier: Boolean(identifier) });
 
     if (!identifier || !password || !role) {
       const error = new Error("Identifier/email, password, and role are required.");
@@ -80,7 +83,17 @@ authRouter.post("/login", async (req, res, next) => {
       throw error;
     }
 
-    if (!["STUDENT", "TEACHER"].includes(role)) {
+    const validRoles = [
+      "SUPER_ADMIN",
+      "INSTITUTION_ADMIN",
+      "DEPARTMENT_ADMIN",
+      "TEACHER",
+      "PROCTOR",
+      "STUDENT",
+      "OBSERVER",
+      "AUDITOR"
+    ];
+    if (!validRoles.includes(role)) {
       const error = new Error("Invalid role.");
       error.status = 400;
       throw error;
@@ -101,21 +114,37 @@ authRouter.post("/login", async (req, res, next) => {
     }
 
     if (!user) {
-      console.debug("[auth.login] no user found for identifier", identifier);
-      const existingAccount = await User.findOne({ identifier }).select("role").lean();
-      const error = new Error(
-        existingAccount
-          ? `This ID exists as ${existingAccount.role}, not ${role}.`
-          : `No ${role.toLowerCase()} account found for this ID. Sign up first with the same role.`
-      );
+      const dashboardRoles = ["SUPER_ADMIN", "INSTITUTION_ADMIN", "DEPARTMENT_ADMIN", "TEACHER", "PROCTOR", "AUDITOR"];
+      if (dashboardRoles.includes(role)) {
+        user = await User.findOne({
+          identifier,
+          role: { $in: dashboardRoles }
+        });
+        if (!user) {
+          const legacyIdentifier = String(rawIdentifier || email || "")
+            .trim()
+            .toLowerCase();
+          if (legacyIdentifier && legacyIdentifier !== identifier) {
+            user = await User.findOne({
+              identifier: legacyIdentifier,
+              role: { $in: dashboardRoles }
+            });
+          }
+        }
+      }
+    }
+
+    if (!user) {
+      const error = new Error("Invalid credentials.");
       error.status = 401;
+      error.code = "INVALID_CREDENTIALS";
       throw error;
     }
 
     if (!(await bcrypt.compare(password, user.passwordHash))) {
-      console.debug("[auth.login] password mismatch for user", user._id?.toString());
-      const error = new Error("Password is incorrect.");
+      const error = new Error("Invalid credentials.");
       error.status = 401;
+      error.code = "INVALID_CREDENTIALS";
       throw error;
     }
 
@@ -124,9 +153,10 @@ authRouter.post("/login", async (req, res, next) => {
         sub: user._id.toString(),
         identifier: user.identifier,
         role: user.role,
+        tokenVersion: user.tokenVersion || 0,
       },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+      config.jwt.secret(),
+      { expiresIn: config.jwt.expiresIn }
     );
 
     res.json({
@@ -134,7 +164,54 @@ authRouter.post("/login", async (req, res, next) => {
       user: serializeUser(user),
     });
 
-    console.debug("[auth.login] login successful for user", user._id?.toString());
+    logger.debug("Login successful.", { userId: user._id?.toString(), role: user.role });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.post("/password-reset/complete", passwordResetRateLimiter, async (req, res, next) => {
+  try {
+    const token = String(req.body?.token || "").trim();
+    const password = String(req.body?.password || "");
+    assertPasswordPolicy(password);
+
+    if (!token || token.length < 32) {
+      const error = new Error("Invalid or expired password reset token.");
+      error.status = 400;
+      error.code = "INVALID_RESET_TOKEN";
+      throw error;
+    }
+
+    const tokenHash = hashResetToken(token);
+    const user = await User.findOne({
+      passwordResetTokenHash: tokenHash,
+      passwordResetExpiresAt: { $gt: new Date() },
+    }).select("+passwordResetTokenHash +passwordResetExpiresAt passwordHash tokenVersion").lean();
+
+    if (!user) {
+      const error = new Error("Invalid or expired password reset token.");
+      error.status = 400;
+      error.code = "INVALID_RESET_TOKEN";
+      throw error;
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    await User.findByIdAndUpdate(user._id, {
+      $set: {
+        passwordHash,
+        passwordChangedAt: new Date(),
+        mustChangePassword: false,
+      },
+      $unset: {
+        passwordResetTokenHash: "",
+        passwordResetExpiresAt: "",
+      },
+      $inc: { tokenVersion: 1 },
+    });
+
+    logger.info("Password reset completed.", { userId: user._id?.toString() });
+    res.json({ success: true });
   } catch (error) {
     next(error);
   }
@@ -151,6 +228,36 @@ authRouter.get("/me", requireAuth, async (req, res, next) => {
     res.json({
       user: serializeUser(user),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.delete("/account", requireAuth, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.sub).select("+passwordHash identifier role");
+    if (!user) {
+      const error = new Error("Account no longer exists.");
+      error.status = 404;
+      error.code = "ACCOUNT_NOT_FOUND";
+      throw error;
+    }
+    if (user.role !== "STUDENT") {
+      const error = new Error("Managed staff accounts must be removed by an institution administrator.");
+      error.status = 409;
+      error.code = "MANAGED_ACCOUNT_DELETION_REQUIRED";
+      throw error;
+    }
+    const password = String(req.body?.password || "");
+    if (!password || !(await bcrypt.compare(password, user.passwordHash))) {
+      const error = new Error("Current password is required to delete this account.");
+      error.status = 401;
+      error.code = "REAUTHENTICATION_REQUIRED";
+      throw error;
+    }
+
+    await deleteStudentAccount(user);
+    res.status(204).send();
   } catch (error) {
     next(error);
   }
@@ -249,7 +356,32 @@ function serializeUser(user) {
     name: user.name,
     identifier: user.identifier,
     role: user.role,
+    mustChangePassword: Boolean(user.mustChangePassword),
   };
+}
+
+export function generateResetToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+export function hashResetToken(token) {
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+
+export function resetTokenExpiryDate(now = new Date()) {
+  const minutes = Number.isFinite(config.auth.resetTokenExpiresMinutes)
+    ? config.auth.resetTokenExpiresMinutes
+    : 30;
+  return new Date(now.getTime() + Math.max(5, minutes) * 60 * 1000);
+}
+
+function assertPasswordPolicy(password) {
+  if (password.length < 8) {
+    const error = new Error("Password must be at least 8 characters.");
+    error.status = 400;
+    error.code = "WEAK_PASSWORD";
+    throw error;
+  }
 }
 
 function parseDescriptor(rawDescriptor) {

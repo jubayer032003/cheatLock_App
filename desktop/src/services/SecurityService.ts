@@ -1,3 +1,5 @@
+import { getCurrentWindow, isTauriAvailable } from "../utils/tauri";
+
 export class SecurityService {
   private static onViolationCallback: ((type: string, message: string) => void) | null = null;
   private static idleTimeoutId: number | null = null;
@@ -6,8 +8,8 @@ export class SecurityService {
   private static eventListeners: { target: EventTarget; type: string; handler: EventListener }[] = [];
 
   public static initialize(options: { onViolation: (type: string, message: string) => void }) {
+    this.destroy(); // Clear any previous active handlers first
     this.onViolationCallback = options.onViolation;
-    this.destroy(); // Clear any previous active handlers
 
     // 1. Intercept context menu (right click)
     this.addListener(window, "contextmenu", (e) => {
@@ -38,7 +40,7 @@ export class SecurityService {
       this.triggerViolation("DRAG_DROP", "Attempted to drag and drop files or objects into the window.");
     });
 
-    // 4. Developer Tools & keyboard tamper detection
+    // 4. Developer Tools & keyboard tamper detection / Escape / F11 handling
     this.addListener(window, "keydown", (e: Event) => {
       const ke = e as KeyboardEvent;
       const isF12 = ke.key === "F12";
@@ -49,6 +51,33 @@ export class SecurityService {
       if (isF12 || isDevToolsCombo) {
         ke.preventDefault();
         this.triggerViolation("TAMPER_DEVTOOLS", "Developer Tools shortcuts blocked.");
+      }
+
+      if (ke.key === "Escape" || ke.key === "F11") {
+        // Wait briefly for the OS/Browser to process key presses and transition state
+        setTimeout(async () => {
+          let exited = false;
+          try {
+            if (isTauriAvailable()) {
+              const isFullscreen = await getCurrentWindow().isFullscreen();
+              if (!isFullscreen) {
+                exited = true;
+              }
+            } else {
+              if (!document.fullscreenElement) {
+                exited = true;
+              }
+            }
+          } catch {
+            if (!document.fullscreenElement) {
+              exited = true;
+            }
+          }
+
+          if (exited) {
+            this.triggerViolation("FULLSCREEN_EXITED", "Candidate exited fullscreen exam window.");
+          }
+        }, 150);
       }
     });
 

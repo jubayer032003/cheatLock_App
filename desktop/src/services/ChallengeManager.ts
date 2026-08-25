@@ -21,11 +21,25 @@ export class ChallengeManager {
   ];
 
   /**
-   * Generate a new challenge sequence choosing 2-3 random actions.
+   * Returns whether real head-pose estimation (rotation/landmarks) is supported by the AI engine.
+   * Temporarily returns false because the current facial landmark tracking is simulated
+   * using static bounding box percentages, causing fixed values of yaw = 0 and pitch = 0.
+   */
+  public static isHeadPoseSupported(): boolean {
+    return false;
+  }
+
+  /**
+   * Generate a new challenge sequence choosing random actions.
    */
   public static generateChallenge(retryCount = 0): ChallengeState {
-    const list = [...this.CHALLENGE_ACTIONS];
-    const size = Math.floor(Math.random() * 2) + 2; // Choose 2 or 3 actions
+    // Filter out rotation challenges if real head-pose estimation is unsupported
+    const availableActions = this.isHeadPoseSupported()
+      ? [...this.CHALLENGE_ACTIONS]
+      : this.CHALLENGE_ACTIONS.filter((act) => act === "BLINK" || act === "SMILE");
+
+    const list = [...availableActions];
+    const size = Math.min(list.length, Math.floor(Math.random() * 2) + 2); // Safe selection bound
     const selected: LivenessAction[] = [];
 
     for (let i = 0; i < size; i++) {

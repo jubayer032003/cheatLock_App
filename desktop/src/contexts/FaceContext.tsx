@@ -4,6 +4,7 @@ import { useCamera } from "./CameraContext";
 import { useToast } from "../hooks/useToast";
 import { faceRecognitionService, FaceResultEvent, FaceResultStatus } from "../services/FaceRecognitionService";
 import { useSuspicion } from "./SuspicionContext";
+import { SecureStorageService } from "../services/SecureStorageService";
 
 interface FaceContextType {
   status: FaceResultStatus;
@@ -39,26 +40,46 @@ export function FaceProvider({ children }: { children: React.ReactNode }) {
 
   // 1. Load cached face profile on user login change
   useEffect(() => {
+    let cancelled = false;
     if (user) {
-      const saved = localStorage.getItem(`cheatlock_face_descriptor_${user.identifier}`);
-      if (saved) {
+      SecureStorageService.get(faceDescriptorKey(user.identifier)).then(async (saved) => {
+        if (cancelled) return;
         try {
-          const descriptor = JSON.parse(saved) as number[];
-          setRegisteredDescriptor(descriptor);
+          let cached = saved ? JSON.parse(saved) as { descriptor: number[]; expiresAt: string } : null;
+          const legacyKey = `cheatlock_face_descriptor_${user.identifier}`;
+          if (!cached) {
+            const legacy = localStorage.getItem(legacyKey);
+            if (legacy) {
+              const descriptor = JSON.parse(legacy) as number[];
+              cached = { descriptor, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() };
+              await SecureStorageService.set(faceDescriptorKey(user.identifier), JSON.stringify(cached));
+              localStorage.removeItem(legacyKey);
+            }
+          }
+          if (cached && Date.parse(cached.expiresAt) > Date.now()) {
+            setRegisteredDescriptor(cached.descriptor);
+          } else {
+            await SecureStorageService.delete(faceDescriptorKey(user.identifier));
+            localStorage.removeItem(legacyKey);
+            setRegisteredDescriptor(null);
+          }
         } catch {
           setRegisteredDescriptor(null);
         }
-      } else {
-        setRegisteredDescriptor(null);
-      }
+      });
     } else {
       setRegisteredDescriptor(null);
     }
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
   const setRegisteredFaceProfile = (descriptor: number[]) => {
     if (!user) return;
-    localStorage.setItem(`cheatlock_face_descriptor_${user.identifier}`, JSON.stringify(descriptor));
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    void SecureStorageService.set(faceDescriptorKey(user.identifier), JSON.stringify({ descriptor, expiresAt }));
+    localStorage.removeItem(`cheatlock_face_descriptor_${user.identifier}`);
     setRegisteredDescriptor(descriptor);
   };
 
@@ -127,6 +148,10 @@ export function FaceProvider({ children }: { children: React.ReactNode }) {
       {children}
     </FaceContext.Provider>
   );
+}
+
+function faceDescriptorKey(studentId: string) {
+  return `cheatlock.face_descriptor.${studentId.trim().toLowerCase()}`;
 }
 
 export function useFace() {

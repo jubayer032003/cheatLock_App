@@ -46,12 +46,13 @@ export class SocketService {
         timeout: 20000,
       });
 
+      // Bind existing listeners once to the new socket instance
+      this.listeners.forEach((callbacks, event) => {
+        callbacks.forEach((cb) => this.socket?.on(event, cb));
+      });
+
       this.socket.on("connect", () => {
         logInfo("[Socket] Connected successfully.");
-        // Re-bind all active listeners on reconnect
-        this.listeners.forEach((callbacks, event) => {
-          callbacks.forEach((cb) => this.socket?.on(event, cb));
-        });
         this.connectionPromise = null;
         resolve(this.socket!);
       });

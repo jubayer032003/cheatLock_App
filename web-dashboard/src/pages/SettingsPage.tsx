@@ -17,7 +17,7 @@ export function SettingsPage() {
       <section className="grid gap-4 md:grid-cols-3">
         <MetricCard icon={UserRound} label="Teacher" value={user?.name || "Teacher"} helper={user?.identifier || "No identifier"} tone="primary" />
         <MetricCard icon={LockKeyhole} label="Session storage" value="JWT" helper="Browser session scoped" tone="success" />
-        <MetricCard icon={Activity} label="Backend" value="Connected" helper={API_BASE_URL} tone="info" />
+        <MetricCard icon={Activity} label="Backend endpoint" value="Configured" helper={API_BASE_URL} tone="info" />
       </section>
 
       <Card className="p-5">

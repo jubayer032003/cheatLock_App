@@ -4,8 +4,26 @@ const questionSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ["MCQ", "CQ"],
+      enum: [
+        "MCQ",
+        "MULTI_SELECT",
+        "CQ",
+        "MATH",
+        "CODE",
+        "TRUE_FALSE",
+        "FILL_BLANK",
+        "MATCHING",
+        "ORDERING",
+        "CASE_STUDY",
+        "FILE_UPLOAD",
+        "IMAGE",
+      ],
       default: "CQ",
+    },
+    id: {
+      type: String,
+      default: "",
+      trim: true,
     },
     text: {
       type: String,
@@ -19,6 +37,65 @@ const questionSchema = new mongoose.Schema(
     correctAnswer: {
       type: String,
       default: "",
+    },
+    marks: {
+      type: Number,
+      default: 1,
+      min: 0,
+    },
+    difficulty: {
+      type: String,
+      enum: ["easy", "medium", "hard"],
+      default: "medium",
+    },
+    subject: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    chapter: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    estimatedMinutes: {
+      type: Number,
+      default: 2,
+      min: 0,
+    },
+    required: {
+      type: Boolean,
+      default: true,
+    },
+    negativeMarking: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    shuffleOptions: {
+      type: Boolean,
+      default: false,
+    },
+    tags: {
+      type: [String],
+      default: [],
+    },
+    teacherNotes: {
+      type: String,
+      default: "",
+    },
+    explanation: {
+      type: String,
+      default: "",
+    },
+    mediaUrl: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    data: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
   },
   { _id: false }
@@ -90,9 +167,9 @@ const examSchema = new mongoose.Schema(
 );
 
 examSchema.index({ createdAt: -1 });
+examSchema.index({ createdBy: 1, status: 1, createdAt: -1 });
 examSchema.index({ status: 1, scheduledStartAt: 1, scheduledEndAt: 1 });
 examSchema.index({ assignedStudents: 1 });
 examSchema.index({ classIds: 1 });
-examSchema.index({ accessCode: 1 }, { unique: true });
 
 export const Exam = mongoose.model("Exam", examSchema);

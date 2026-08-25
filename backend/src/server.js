@@ -1,12 +1,10 @@
 import cors from "cors";
-import dotenv from "dotenv";
 import express from "express";
 import helmet from "helmet";
 import http from "node:http";
 import mongoose from "mongoose";
 import dns from "node:dns";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { buildCorsOptions, config, validateStartupConfig } from "./config.js";
 import { authRouter } from "./routes/auth.js";
 import { classesRouter } from "./routes/classes.js";
 import { communityRouter } from "./routes/community.js";
@@ -20,13 +18,17 @@ import { tenantsRouter } from "./routes/tenants.js";
 import { scimRouter } from "./routes/scim.js";
 import { ltiRouter } from "./routes/lti.js";
 import { publicApiRouter } from "./routes/publicApi.js";
+import { healthRouter } from "./routes/health.js";
+import { questionBankRouter } from "./routes/questionBank.js";
+import { selfExamRouter } from "./routes/selfExam.js";
 import { Server } from "socket.io";
 import { configureProctoringSocket } from "./socket/proctoring.js";
 import { rateLimiter } from "./middleware/rateLimiter.js";
 import { logger } from "./services/logger.js";
+import { configureEvidenceRetentionCleanup } from "./services/evidenceRetention.js";
+import { configureSocketAdapter } from "./services/socketAdapter.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: resolve(__dirname, "../.env"), override: false });
+validateStartupConfig();
 
 if (process.env.MONGODB_DNS_SERVERS) {
   dns.setServers(
@@ -38,29 +40,21 @@ if (process.env.MONGODB_DNS_SERVERS) {
 
 const app = express();
 const server = http.createServer(app);
-const port = Number(process.env.PORT || 3000);
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || "*")
-  .split(",")
-  .map((origin) => origin.trim());
+const port = config.port;
+const corsOptions = buildCorsOptions();
 
-app.use(
-  cors({
-    origin: allowedOrigins.includes("*") ? true : allowedOrigins,
-  })
-);
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(helmet());
+app.use((req, res, next) => {
+  const requestId = req.get("x-request-id") || cryptoRandomId();
+  req.id = requestId;
+  res.setHeader("x-request-id", requestId);
+  next();
+});
+app.use("/health", healthRouter);
 app.use(rateLimiter);
 app.use(express.json({ limit: "3mb" }));
-
-app.get("/health", (_req, res) => {
-  const dbStatus = mongoose.connection.readyState === 1 ? "CONNECTED" : "DISCONNECTED";
-  res.json({
-    ok: true,
-    service: "cheatlock-backend",
-    database: dbStatus,
-    timestamp: new Date().toISOString(),
-  });
-});
 
 app.use("/auth", authRouter);
 app.use("/classes", classesRouter);
@@ -75,48 +69,125 @@ app.use("/tenants", tenantsRouter);
 app.use("/scim", scimRouter);
 app.use("/lti", ltiRouter);
 app.use("/public", publicApiRouter);
+app.use("/question-bank", questionBankRouter);
+app.use("/self-exam", selfExamRouter);
+app.use("/self-exams", selfExamRouter);
+app.use("/seft-exam", selfExamRouter);
+
+app.use((req, res) => {
+  res.status(404).json({
+    code: "ROUTE_NOT_FOUND",
+    message: `Route not found: ${req.method} ${req.originalUrl}`,
+  });
+});
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins.includes("*") ? true : allowedOrigins,
+    origin: corsOptions.origin,
+    credentials: false,
   },
 });
+let closeSocketAdapter = async () => {};
 app.set("io", io);
 configureProctoringSocket(io);
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   const status = err.status || 500;
+  logger.error("Request failed.", {
+    statusCode: status,
+    requestId: req.id,
+    method: req.method,
+    path: req.path,
+    code: err.code || "REQUEST_FAILED",
+  });
   res.status(status).json({
-    message: err.message || "Server error",
+    code: err.code || (status === 500 ? "SERVER_ERROR" : "REQUEST_FAILED"),
+    message: config.nodeEnv === "production" && status >= 500
+      ? "Server error"
+      : err.message || "Server error",
   });
 });
 
-if (!process.env.MONGODB_URI) {
-  throw new Error("MONGODB_URI is missing. Add it to backend/.env.");
-}
-
-if (!process.env.JWT_SECRET) {
-  throw new Error("JWT_SECRET is missing. Add it to backend/.env.");
-}
-
-const mongoUriDisplay = process.env.MONGODB_URI.replace(
-  /\/\/([^:]+):([^@]+)@/,
-  "//$1:*****@"
-);
-console.log(`MongoDB connection type: ${process.env.MONGODB_URI.startsWith("mongodb+srv://") ? "mongodb+srv" : "mongodb://"}, URI: ${mongoUriDisplay}`);
-
 try {
-await mongoose.connect(process.env.MONGODB_URI, {
+  logger.info("Backend startup configuration accepted.", {
+    nodeEnv: config.nodeEnv,
+    port,
+    corsConfigured: Boolean(config.cors.clientOrigin || config.cors.allowedOrigins),
+    s3Enabled: config.s3().enabled,
+    redisConfigured: Boolean(config.redis.url),
+  });
+  logger.info(`MongoDB connection type: ${config.mongodb.uri().startsWith("mongodb+srv://") ? "mongodb+srv" : "mongodb"}`);
+  await mongoose.connect(config.mongodb.uri(), {
     serverSelectionTimeoutMS: 10000,
-    dbName: process.env.MONGODB_DB_NAME || "cheatlock",
+    dbName: config.mongodb.dbName,
   });
 
   logger.info(`MongoDB connected successfully. Database: ${mongoose.connection.name}`);
+  closeSocketAdapter = await configureSocketAdapter(io);
+  await configureEvidenceRetentionCleanup();
+
+  server.on("error", (error) => {
+    logger.critical("Backend HTTP server failed.", {
+      errorName: error.name,
+      errorCode: error.code,
+      message: error.message,
+      stack: error.stack,
+    });
+    process.exit(1);
+  });
 
   server.listen(port, "0.0.0.0", () => {
     logger.info(`CheatLock backend running on http://localhost:${port}`);
   });
 } catch (error) {
-  logger.critical(`Failed to connect to MongoDB: ${error.message}`);
+  logger.critical("Backend startup failed.", {
+    errorName: error.name || "StartupError",
+    errorCode: error.code,
+    message: error.message,
+    stack: error.stack,
+  });
   process.exit(1);
 }
+
+function cryptoRandomId() {
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function shutdown(signal) {
+  logger.info("Backend shutdown requested.", { signal });
+  server.close(async () => {
+    await closeSocketAdapter().catch((error) => {
+      logger.error("Socket.IO Redis adapter shutdown failed.", { errorName: error.name });
+    });
+    await mongoose.disconnect().catch((error) => {
+      logger.error("MongoDB disconnect failed during shutdown.", { errorName: error.name });
+    });
+    logger.info("Backend shutdown complete.", { signal });
+    process.exit(0);
+  });
+  setTimeout(() => {
+    logger.critical("Backend shutdown timed out.", { signal });
+    process.exit(1);
+  }, 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("uncaughtException", (error) => {
+  logger.critical("Uncaught exception.", {
+    errorName: error.name,
+    errorCode: error.code,
+    message: error.message,
+    stack: error.stack,
+  });
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  logger.critical("Unhandled promise rejection.", {
+    reasonName: reason?.name || typeof reason,
+    reasonCode: reason?.code,
+    message: reason?.message,
+    stack: reason?.stack,
+  });
+  process.exit(1);
+});

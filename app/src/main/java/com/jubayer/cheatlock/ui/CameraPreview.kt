@@ -1,6 +1,8 @@
 package com.jubayer.cheatlock.ui
 
 import android.annotation.SuppressLint
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
@@ -32,11 +34,18 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
 import com.jubayer.cheatlock.ui.theme.CheatLockDanger
+import com.jubayer.cheatlock.BuildConfig
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.concurrent.Executor
 
 private const val TAG = "CameraPreview"
+
+private fun biometricTrace(marker: String, message: String = "") {
+    if (BuildConfig.ENABLE_RUNTIME_TRACING) {
+        Log.d(TAG, "[$marker] $message")
+    }
+}
 
 @SuppressLint("UnsafeOptInUsageError")
 @Composable
@@ -49,28 +58,38 @@ fun CameraPreview(
     onPhoneDetected: () -> Unit = {},
     onFaceDetected: (Face) -> Unit = {},
     onObjectsDetected: (List<DetectedObject>) -> Unit = {},
-    onPhoneDetectedWithLabels: (String) -> Unit = {}
+    onPhoneDetectedWithLabels: (String) -> Unit = {},
+    onCameraError: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val mainExecutor = ContextCompat.getMainExecutor(context)
 
     var detectedObjects by remember { mutableStateOf<List<DetectedObject>>(emptyList()) }
+    val releaseActions = remember { mutableMapOf<PreviewView, () -> Unit>() }
 
     // Key the view to the lifecycleOwner and startup preference
     key(lifecycleOwner, preferFastStartup) {
         Box(modifier = modifier) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
+                factory = factory@ { ctx ->
                     val previewView = PreviewView(ctx).apply {
                         implementationMode = PreviewView.ImplementationMode.PERFORMANCE
                         scaleType = PreviewView.ScaleType.FILL_CENTER
                     }
 
+                val permissionGranted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                biometricTrace("BIOMETRIC_CAMERA_PERMISSION", "granted=$permissionGranted lifecycle=${lifecycleOwner.lifecycle.currentState}")
+                if (!permissionGranted) {
+                    onCameraError("Camera permission is required for biometric verification.")
+                    return@factory previewView
+                }
+
                 val faceEmbeddingModel = FaceEmbeddingModel(ctx.applicationContext)
                 val mainHandler = Handler(Looper.getMainLooper())
                 val cleanupCallbacks = mutableListOf<() -> Unit>()
+                var released = false
 
                 fun postStatus(status: FaceStatus) {
                     mainHandler.post { onFaceStatusChanged(status) }
@@ -78,11 +97,13 @@ fun CameraPreview(
 
                 postStatus(FaceStatus.CHECKING)
 
-                previewView.setTag {
+                releaseActions[previewView] = {
+                    released = true
                     cleanupCallbacks.asReversed().forEach { cleanup ->
                         runCatching { cleanup() }
                     }
                 }
+                biometricTrace("BIOMETRIC_PREVIEW_READY", "surfaceProviderPrepared=true")
 
                 val snapshotTask = object : Runnable {
                     override fun run() {
@@ -115,9 +136,23 @@ fun CameraPreview(
                 }
 
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                cameraProviderFuture.addListener({
+                cameraProviderFuture.addListener(listener@ {
+                    if (released) {
+                        biometricTrace("BIOMETRIC_CAMERA_DISPOSE", "providerCompletedAfterRelease=true")
+                        return@listener
+                    }
                     runCatching {
                         val cameraProvider = cameraProviderFuture.get()
+                        biometricTrace("BIOMETRIC_CAMERA_PROVIDER_READY", "lifecycle=${lifecycleOwner.lifecycle.currentState}")
+
+                        val frontSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+                        val frontAvailable = cameraProvider.hasCamera(frontSelector)
+                        biometricTrace("BIOMETRIC_FRONT_CAMERA_AVAILABLE", "available=$frontAvailable")
+                        if (!frontAvailable) {
+                            onCameraError("No front camera is available for biometric verification.")
+                            postStatus(FaceStatus.NO_FACE)
+                            return@runCatching
+                        }
                         
                         // Force unbind before re-binding to prevent hardware lock conflicts
                         cameraProvider.unbindAll()
@@ -169,6 +204,9 @@ fun CameraPreview(
                                 mediaImage,
                                 imageProxy.imageInfo.rotationDegrees
                             )
+                            if (frameCounter % 30 == 0) {
+                                biometricTrace("BIOMETRIC_ANALYSIS_FRAME", "rotation=${imageProxy.imageInfo.rotationDegrees}")
+                            }
 
                             // 1. Run face detection on YUV ImageProxy
                             val faceTask = detector.process(image)
@@ -179,6 +217,7 @@ fun CameraPreview(
                                         postStatus(status)
                                     }
                                     faces.firstOrNull()?.let { face ->
+                                        biometricTrace("BIOMETRIC_FACE_DETECTED", "faceCount=${faces.size}")
                                         mainHandler.post { onFaceDetected(face) }
                                         if (!faceEmbeddingModel.isAvailable) {
                                             face.toDescriptor(image.width, image.height)
@@ -228,35 +267,22 @@ fun CameraPreview(
                             faceTask.addOnCompleteListener { imageProxy.close() }
                         }
 
-                        val selectors = listOf(
-                            CameraSelector.DEFAULT_FRONT_CAMERA,
-                            CameraSelector.DEFAULT_BACK_CAMERA
+                        biometricTrace("BIOMETRIC_CAMERA_BIND_START", "lensFacing=front lifecycle=${lifecycleOwner.lifecycle.currentState}")
+                        val camera = cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            frontSelector,
+                            preview,
+                            imageAnalysis
                         )
-                        
-                        var bound = false
-                        for (selector in selectors) {
-                            if (bound) break
-                            try {
-                                cameraProvider.bindToLifecycle(
-                                    lifecycleOwner,
-                                    selector,
-                                    preview,
-                                    imageAnalysis
-                                )
-                                bound = true
-                                Log.d(TAG, "Camera bound: $selector")
-                            } catch (bindError: Exception) {
-                                Log.w(TAG, "Could not bind $selector", bindError)
-                            }
+                        biometricTrace("BIOMETRIC_CAMERA_BIND_SUCCESS", "lensFacing=front")
+                        camera.cameraInfo.cameraState.observe(lifecycleOwner) { state ->
+                            biometricTrace("BIOMETRIC_CAMERA_STATE", "state=${state.type}")
                         }
-                        
-                        if (!bound) {
-                            postStatus(FaceStatus.NO_FACE)
-                        } else {
-                            cleanupCallbacks += { cameraProvider.unbindAll() }
-                        }
+                        cleanupCallbacks += { cameraProvider.unbind(preview, imageAnalysis) }
                     }.onFailure { error ->
-                        Log.e(TAG, "Camera setup failed", error)
+                        biometricTrace("BIOMETRIC_CAMERA_BIND_FAILED", "exception=${error::class.java.simpleName}")
+                        Log.e(TAG, "Biometric front camera setup failed", error)
+                        onCameraError("Front camera could not start. Please retry biometric verification.")
                         postStatus(FaceStatus.NO_FACE)
                     }
                 }, mainExecutor)
@@ -265,8 +291,8 @@ fun CameraPreview(
             },
             update = { _ -> }, // Modifiers are handled by the shell
             onRelease = { previewView ->
-                (previewView.getTag() as? (() -> Unit))?.invoke()
-                previewView.setTag(null)
+                biometricTrace("BIOMETRIC_CAMERA_DISPOSE", "lifecycle=${lifecycleOwner.lifecycle.currentState}")
+                releaseActions.remove(previewView)?.invoke()
             }
         )
 

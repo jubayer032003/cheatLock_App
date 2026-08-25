@@ -1,6 +1,8 @@
 import { Camera, Circle } from "lucide-react";
 import { StatusBadge, statusFromScore } from "./StatusBadge";
 import type { LiveStudent } from "../types";
+import { useAnimatedNumber } from "../hooks/useAnimatedNumber";
+import { scorePercentage } from "../lib/scoreMetrics";
 
 interface StudentCardProps {
   student: LiveStudent;
@@ -9,8 +11,10 @@ interface StudentCardProps {
 }
 
 export function StudentCard({ student, selected, onSelect }: StudentCardProps) {
-  const status = statusFromScore(student.suspicionScore);
+  const percentage = scorePercentage(student);
+  const status = statusFromScore(percentage);
   const previewSrc = student.previewUrl || student.previewBase64;
+  const displayScore = useAnimatedNumber(percentage);
 
   return (
     <button
@@ -49,10 +53,10 @@ export function StudentCard({ student, selected, onSelect }: StudentCardProps) {
                     ? "bg-amber-500"
                     : "bg-rose-500"
               }`}
-              style={{ width: `${Math.max(0, Math.min(100, student.suspicionScore))}%` }}
+              style={{ width: `${percentage}%` }}
             />
           </div>
-          <span className="w-9 text-right text-sm font-semibold">{student.suspicionScore}</span>
+          <span className="w-9 text-right text-sm font-semibold">{Math.round(displayScore)}</span>
         </div>
 
         <div className="mt-3 flex items-center justify-between gap-3 text-xs">
@@ -70,4 +74,3 @@ export function StudentCard({ student, selected, onSelect }: StudentCardProps) {
     </button>
   );
 }
-

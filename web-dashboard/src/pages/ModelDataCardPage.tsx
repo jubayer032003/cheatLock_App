@@ -413,8 +413,8 @@ export function ModelDataCardPage() {
               <Activity className="text-violet-400" size={14} />
               Weekly Violation Trends (Institution-Wide)
             </h3>
-            <div className="h-64 rounded bg-slate-950 p-3 mt-3">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="h-64 min-w-0 rounded bg-slate-950 p-3 mt-3">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                 <LineChart data={weeklyTrends}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="name" stroke="#64748b" style={{ fontSize: "10px" }} />
@@ -442,8 +442,8 @@ export function ModelDataCardPage() {
                 <PieChart size={14} className="text-violet-400" />
                 Student Integrity Risk Distribution
               </h3>
-              <div className="h-60 rounded bg-slate-950 p-3 mt-3">
-                <ResponsiveContainer width="100%" height="100%">
+              <div className="h-60 min-w-0 rounded bg-slate-950 p-3 mt-3">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                   <BarChart data={riskProjections}>
                     <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                     <XAxis dataKey="name" stroke="#64748b" style={{ fontSize: "10px" }} />
@@ -521,10 +521,11 @@ export function ModelDataCardPage() {
               </h3>
               <button 
                 type="button" 
-                onClick={() => alert("Model rollback sequence initiated.")}
-                className="py-1 px-3 bg-red-950/20 border border-red-500/30 text-red-400 rounded text-[10px] font-mono hover:bg-slate-900 transition"
+                disabled
+                title="Model rollback is not implemented in the current backend."
+                className="cursor-not-allowed rounded border border-slate-700 bg-slate-950 px-3 py-1 font-mono text-[10px] text-slate-500"
               >
-                Rollback Active Model
+                Rollback unavailable
               </button>
             </div>
 

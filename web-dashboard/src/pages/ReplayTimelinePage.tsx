@@ -1,5 +1,4 @@
 import {
-  Download,
   Image,
   SlidersHorizontal,
   Play,
@@ -42,6 +41,7 @@ import {
 type ReplayFilter = "all" | "suspicious" | "high" | "bookmarked";
 type ReplayStudent = {
   studentId: string;
+  displayStudentId: string;
   studentName?: string;
   status: ExamSessionStatus | "NOT_STARTED";
   suspicionScore?: number;
@@ -55,6 +55,8 @@ export function ReplayTimelinePage() {
   const [timeline, setTimeline] = useState<ProctoringTimelineResponse | null>(null);
   const [filter, setFilter] = useState<ReplayFilter>("all");
   const [message, setMessage] = useState("");
+  const [loadingStudents, setLoadingStudents] = useState(true);
+  const [loadingTimeline, setLoadingTimeline] = useState(false);
 
   // Replay Engine States
   const [isPlaying, setIsPlaying] = useState(false);
@@ -73,35 +75,50 @@ export function ReplayTimelinePage() {
   const [timelineSearch, setTimelineSearch] = useState("");
 
   // Load students belonging to exam
-  const loadStudents = useCallback(() => {
-    Promise.all([fetchTeacherExam(examId), fetchSessions()])
-      .then(([exam, items]) => {
-        const examSessions = items.filter((session) => String(session.examId || "") === examId);
-        const sessionMap = new Map(examSessions.map((session) => [session.studentId, session]));
-        const studentIds = new Set<string>([
-          ...(exam.assignedStudents || []),
-          ...(exam.communityStudents || []),
-          ...examSessions.map((session) => session.studentId),
-        ]);
-        const mergedStudents = [...studentIds]
-          .filter(Boolean)
-          .map((studentId) => {
-            const session = sessionMap.get(studentId);
-            return {
-              studentId,
-              studentName: session?.studentName || studentId,
-              status: session?.status || "NOT_STARTED",
-              suspicionScore: session?.suspicionScore || 0,
-              examId,
-            };
-          })
-          .sort((first, second) => (second.suspicionScore || 0) - (first.suspicionScore || 0));
-        setStudents(mergedStudents);
-        if (!selectedStudentId && mergedStudents.length > 0) {
-          setSelectedStudentId(mergedStudents[0].studentId);
-        }
-      })
-      .catch(() => setMessage("Could not load students."));
+  const loadStudents = useCallback(async () => {
+    setLoadingStudents(true);
+    try {
+      const [exam, items] = await Promise.all([fetchTeacherExam(examId), fetchSessions()]);
+      const examSessions = items.filter((session) => String(session.examId || "") === examId);
+      const sessionMap = new Map(examSessions.map((session) => [compactStudentId(session.studentId), session]));
+      const studentIds = new Set<string>([
+        ...(exam.assignedStudents || []),
+        ...(exam.communityStudents || []),
+        ...examSessions.map((session) => session.studentId),
+      ]);
+      const mergedByStudentId = new Map<string, ReplayStudent>();
+      [...studentIds].filter(Boolean).forEach((rawStudentId) => {
+        const displayStudentId = normalizeStudentId(rawStudentId);
+        const compactId = compactStudentId(displayStudentId);
+        const session = sessionMap.get(compactId);
+        const existing = mergedByStudentId.get(compactId);
+        mergedByStudentId.set(compactId, {
+          studentId: session?.studentId || existing?.studentId || displayStudentId,
+          displayStudentId: existing?.displayStudentId || displayStudentId,
+          studentName: session?.studentName || existing?.studentName || displayStudentId,
+          status: session?.status || existing?.status || "NOT_STARTED",
+          suspicionScore: session?.suspicionScore ?? existing?.suspicionScore ?? 0,
+          examId,
+        });
+      });
+      const mergedStudents = [...mergedByStudentId.values()]
+        .sort((first, second) => (second.suspicionScore || 0) - (first.suspicionScore || 0));
+      setStudents(mergedStudents);
+      if (!selectedStudentId && mergedStudents.length > 0) {
+        setSelectedStudentId(mergedStudents[0].studentId);
+      }
+      if (mergedStudents.length === 0) {
+        setMessage("No student records found for this exam.");
+      } else {
+        setMessage("");
+      }
+    } catch (err: any) {
+      console.error("Failed to load students:", err);
+      setMessage(`Failed to load students: ${err.message || "Unknown error"}`);
+      setStudents([]);
+    } finally {
+      setLoadingStudents(false);
+    }
   }, [examId, selectedStudentId]);
 
   useEffect(() => {
@@ -109,22 +126,29 @@ export function ReplayTimelinePage() {
   }, [examId]);
 
   // Load student timeline details
-  const loadTimeline = useCallback(() => {
+  const loadTimeline = useCallback(async () => {
     if (!examId || !selectedStudentId) {
       setTimeline(null);
       return;
     }
-    setIsPlaying(false);
-    setPlayheadIndex(0);
-    fetchProctoringTimeline(examId, selectedStudentId)
-      .then((res) => {
-        setTimeline(res);
-        setBookmarks(res.review?.bookmarks || []);
-        setReviewedEvents(res.review?.reviewedEvents || []);
-        setPrivateNotes(res.review?.notes || "");
-        setIntegrityDecision(res.review?.decision || "PENDING");
-      })
-      .catch(() => setMessage("Could not load replay timeline."));
+    setLoadingTimeline(true);
+    try {
+      setIsPlaying(false);
+      setPlayheadIndex(0);
+      const res = await fetchProctoringTimeline(examId, selectedStudentId);
+      setTimeline(res);
+      setBookmarks(res.review?.bookmarks || []);
+      setReviewedEvents(res.review?.reviewedEvents || []);
+      setPrivateNotes(res.review?.notes || "");
+      setIntegrityDecision(res.review?.decision || "PENDING");
+      setMessage("");
+    } catch (err: any) {
+      console.error("Failed to load replay timeline:", err);
+      setMessage(`Failed to load replay timeline: ${err.message || "Unknown error"}`);
+      setTimeline(null);
+    } finally {
+      setLoadingTimeline(false);
+    }
   }, [examId, selectedStudentId]);
 
   useEffect(() => {
@@ -187,99 +211,36 @@ export function ReplayTimelinePage() {
     return events[playheadIndex] || null;
   }, [timeline?.timelineEvents, playheadIndex]);
 
-  // Find latest screen snapshot preview up to playhead
-  const latestScreenSnapshot = useMemo(() => {
+  // Find latest camera preview up to playhead
+  const latestCameraPreview = useMemo(() => {
     const events = timeline?.timelineEvents || [];
     for (let i = playheadIndex; i >= 0; i--) {
       const ev = events[i];
-      if (ev?.eventType === "screen_telemetry_uploaded" && ev.previewBase64) {
-        return ev.previewBase64;
+      if (ev?.eventType === "camera_preview_updated" && (ev.previewUrl || ev.previewBase64)) {
+        return ev.previewUrl || ev.previewBase64;
       }
     }
     return null;
   }, [timeline?.timelineEvents, playheadIndex]);
 
-  // Automated AI Summary Narrative Generator
-  const aiNarrative = useMemo(() => {
-    if (!timeline || timeline.timelineEvents.length === 0) {
-      return "No proctoring event telemetry recorded for this student yet.";
+  // Find latest screen snapshot preview up to playhead
+  const latestScreenSnapshot = useMemo(() => {
+    const events = timeline?.timelineEvents || [];
+    for (let i = playheadIndex; i >= 0; i--) {
+      const ev = events[i];
+      if (ev?.eventType === "screen_telemetry_uploaded" && (ev.previewUrl || ev.previewBase64)) {
+        return ev.previewUrl || ev.previewBase64;
+      }
     }
+    return null;
+  }, [timeline?.timelineEvents, playheadIndex]);
 
-    const events = timeline.timelineEvents;
-    const score = timeline.finalSuspicionScore;
-    const highAlerts = events.filter((e) => e.severity === "high");
-    const appSwitches = events.filter((e) => e.eventType.includes("WINDOW_BLURRED") || e.eventType.includes("focus"));
-    const phoneDetections = events.filter((e) => e.alertMessage.includes("Phone") || e.alertMessage.includes("PHONE"));
-    const speechDetections = events.filter((e) => e.eventType.includes("VOICE") || e.alertMessage.includes("Speech"));
-
-    let text = `Student entered the proctoring environment with an initial score of 0. `;
-    
-    if (highAlerts.length > 0) {
-      text += `During the session, the AI detector triggered ${highAlerts.length} high-severity event(s). `;
-    } else {
-      text += `Throughout the exam, the student maintained consistent engagement with no critical violations. `;
-    }
-
-    if (phoneDetections.length > 0) {
-      text += `A prohibited item (Mobile Phone) was flagged for a duration of several seconds, causing a score increase. `;
-    }
-    if (appSwitches.length > 0) {
-      text += `The system recorded ${appSwitches.length} instance(s) of browser window switches or exiting fullscreen, suggesting workspace distraction. `;
-    }
-    if (speechDetections.length > 0) {
-      text += `DSP audio engine captured human speech signals in the room, incrementing suspicion levels temporarily. `;
-    }
-
-    if (score >= 70) {
-      text += `Due to multiple compounding anomalies, the final suspicion score escalated to ${score} (Critical Risk). Instructor review and verification is recommended before grading.`;
-    } else if (score >= 40) {
-      text += `The final score concluded at ${score} (Moderate Warning). Overall behavior indicates minor anomalies.`;
-    } else {
-      text += `The session finished with a final suspicion score of ${score} (Normal Risk). The compliance logs support a clean exam pass.`;
-    }
-
-    return text;
-  }, [timeline]);
-
-  // AI Explanation Card info for current event
+  // Show recorded backend event facts only. Do not invent detector modules or causal explanations.
   const eventExplanation = useMemo(() => {
     if (!currentEvent) return null;
-    const type = currentEvent.eventType;
-    let rule = "Default scoring multiplier";
-    let explanation = "Scoring weight was added based on proctoring event rules.";
-    let mod = "Proctor Central";
-
-    if (type.includes("FACE_MISSING")) {
-      mod = "Biometric Face Recognition";
-      rule = "Face Presence Enforcement";
-      explanation = "Webcam frame did not capture any face landmarks within the tracking area. Indicates the student has left the webcam scope.";
-    } else if (type.includes("MULTIPLE_FACES")) {
-      mod = "Biometric Face Recognition";
-      rule = "Single Occupancy Verification";
-      explanation = "Tracking mesh detected more than one human face profile simultaneously. Indicates third-party presence in room.";
-    } else if (type.includes("PHONE") || currentEvent.alertMessage.includes("Phone")) {
-      mod = "YOLOv8n Object Detector";
-      rule = "Prohibited Device Warning";
-      explanation = "Deep learning object detection box matched class label 'Mobile Phone' with high confidence. Device was visible for >= 3 seconds.";
-    } else if (type.includes("VOICE") || type.includes("SPEECH")) {
-      mod = "Intelligent VAD Engine";
-      rule = "Speech Activity Lock";
-      explanation = "Offline voice activity detector identified speech patterns exceeding the calibrated environmental noise threshold.";
-    } else if (type.includes("WINDOW_BLURRED")) {
-      mod = "Kiosk Security Shield";
-      rule = "Browser Focus Constraint";
-      explanation = "Exam window lost active focus, indicating student opened another window, workspace app, or pressed ALT+TAB.";
-    } else if (type.includes("MONITOR") || type.includes("display")) {
-      mod = "Screen Capture Manager";
-      rule = "Multi-Monitor Detection";
-      explanation = "Query on available monitors returned an count > 1. External monitors must be unplugged during testing.";
-    }
-
     return {
-      module: mod,
-      rule,
-      explanation,
-      score: currentEvent.suspicionScore,
+      explanation: currentEvent.alertMessage || formatEventName(currentEvent.eventType),
+      score: currentEvent.scoreDelta || 0,
       severity: currentEvent.severity,
     };
   }, [currentEvent]);
@@ -305,11 +266,6 @@ export function ReplayTimelinePage() {
   const toggleBookmark = (eventId: string) => {
     setBookmarks((prev) => {
       const next = prev.includes(eventId) ? prev.filter((id) => id !== eventId) : [...prev, eventId];
-      // Save changes immediately
-      updateIntegrityReview(examId, selectedStudentId, integrityDecision, privateNotes, {
-        bookmarks: next,
-        reviewedEvents,
-      });
       return next;
     });
   };
@@ -317,11 +273,6 @@ export function ReplayTimelinePage() {
   const toggleReviewed = (eventId: string) => {
     setReviewedEvents((prev) => {
       const next = prev.includes(eventId) ? prev.filter((id) => id !== eventId) : [...prev, eventId];
-      // Save changes immediately
-      updateIntegrityReview(examId, selectedStudentId, integrityDecision, privateNotes, {
-        bookmarks,
-        reviewedEvents: next,
-      });
       return next;
     });
   };
@@ -349,7 +300,7 @@ export function ReplayTimelinePage() {
             {students.map((session) => (
               <button
                 className={`w-full px-4 py-3 text-left hover:bg-slate-800 flex items-center justify-between gap-3 transition ${
-                  selectedStudentId === session.studentId ? "bg-slate-800/80 border-l-2 border-violet-500" : ""
+                  compactStudentId(selectedStudentId) === compactStudentId(session.studentId) ? "bg-slate-800/80 border-l-2 border-violet-500" : ""
                 }`}
                 key={`${session.studentId}-${session.examId || ""}`}
                 onClick={() => setSelectedStudentId(session.studentId)}
@@ -357,7 +308,7 @@ export function ReplayTimelinePage() {
               >
                 <div>
                   <p className="text-xs font-bold text-white">{session.studentName || session.studentId}</p>
-                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">{session.studentId}</p>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">{session.displayStudentId}</p>
                 </div>
                 <div className="text-right font-mono">
                   <span className={`text-xs font-bold ${
@@ -372,14 +323,15 @@ export function ReplayTimelinePage() {
                 </div>
               </button>
             ))}
-            {students.length === 0 && <p className="p-4 text-xs text-slate-500 text-center font-mono">No student records found.</p>}
+            {loadingStudents && <p className="p-4 text-xs text-slate-400 text-center font-mono">Loading students...</p>}
+            {!loadingStudents && students.length === 0 && <p className="p-4 text-xs text-slate-500 text-center font-mono">No student records found.</p>}
           </div>
         </aside>
 
         {/* Replay Details Deck */}
         <main className="space-y-6">
           
-          {/* AI Exam Summary Card */}
+          {/* Student report actions */}
           <Card className="p-5 bg-slate-900 border-slate-800 flex flex-col gap-4">
             <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between border-b border-slate-800 pb-3">
               <div>
@@ -394,27 +346,17 @@ export function ReplayTimelinePage() {
                   className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 text-slate-300 transition text-xs py-1.5 px-3 rounded"
                   disabled={!timeline}
                   type="button"
-                  onClick={() => timeline && exportStudentPdf(timeline, filteredEvents, false)}
+                  onClick={() => {
+                    if (timeline && !exportStudentPdf(timeline, filteredEvents)) {
+                      setMessage("Print window was blocked. Allow popups for this dashboard and try again.");
+                    }
+                  }}
                 >
-                  Print Report
-                </button>
-                <button
-                  className="primary-button bg-violet-600 hover:bg-violet-700 text-white transition text-xs py-1.5 px-3 rounded flex items-center gap-1.5"
-                  disabled={!timeline}
-                  type="button"
-                  onClick={() => timeline && exportStudentPdf(timeline, filteredEvents, true)}
-                >
-                  <Download size={13} />
-                  Download PDF
+                  Print / Save as PDF
                 </button>
               </div>
             </div>
 
-            {/* AI Summary narrative text */}
-            <div className="bg-slate-950 border border-slate-800 rounded p-4 flex flex-col gap-2">
-              <span className="text-[9px] uppercase tracking-wider text-violet-400 font-mono font-bold">Concise AI behavior Summary</span>
-              <p className="text-xs text-slate-300 leading-relaxed font-sans">{aiNarrative}</p>
-            </div>
           </Card>
 
           {/* Session Replay Player Component */}
@@ -450,14 +392,14 @@ export function ReplayTimelinePage() {
               <div className="flex flex-col gap-2">
                 <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1"><Camera size={12} /> Proctor Webcam Capture</span>
                 <div className="aspect-video bg-slate-950 rounded-lg border border-slate-800 overflow-hidden relative flex items-center justify-center">
-                  {currentEvent?.previewUrl || currentEvent?.previewBase64 ? (
+                  {latestCameraPreview ? (
                     <img 
-                      className="h-full w-full object-cover" 
-                      src={currentEvent.previewUrl || currentEvent.previewBase64} 
+                      className="h-full w-full object-contain bg-black"
+                      src={latestCameraPreview}
                       alt="Proctor Webcam" 
                     />
                   ) : (
-                    <div className="text-slate-650 text-xs font-mono">No camera frame at playhead</div>
+                    <div className="text-slate-650 text-xs font-mono">No webcam captures recorded yet</div>
                   )}
                   {/* Watermark overlay */}
                   <div className="absolute bottom-2 left-2 bg-slate-950/80 border border-slate-800 rounded px-1.5 py-0.5 text-[8px] font-mono text-slate-400">
@@ -531,7 +473,7 @@ export function ReplayTimelinePage() {
               </div>
             </div>
 
-            {/* Playhead Event Info / AI Explanation Panel */}
+            {/* Recorded event details */}
             {eventExplanation && (
               <div className="bg-slate-950 border border-slate-800 rounded p-4 mt-2 space-y-3">
                 <div className="flex items-center justify-between">
@@ -545,15 +487,7 @@ export function ReplayTimelinePage() {
                     Score Impact: +{eventExplanation.score}
                   </span>
                 </div>
-                <div className="grid gap-3 md:grid-cols-3 text-xs font-mono border-t border-slate-900 pt-3">
-                  <div>
-                    <span className="text-slate-500 block text-[9px] uppercase">AI Module</span>
-                    <span className="text-slate-300 font-bold">{eventExplanation.module}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block text-[9px] uppercase">Rule Triggered</span>
-                    <span className="text-slate-300 font-bold">{eventExplanation.rule}</span>
-                  </div>
+                <div className="grid gap-3 text-xs font-mono border-t border-slate-900 pt-3">
                   <div>
                     <span className="text-slate-500 block text-[9px] uppercase">Event Time</span>
                     <span className="text-slate-300 font-bold">
@@ -755,6 +689,14 @@ function formatEventName(eventType: string) {
   return eventType.split("_").join(" ");
 }
 
+function normalizeStudentId(studentId: string) {
+  return String(studentId || "").trim().toLowerCase();
+}
+
+function compactStudentId(studentId: string) {
+  return normalizeStudentId(studentId).replace(/[^a-z0-9]/g, "");
+}
+
 function ScoreChart({ events }: { events: TimelineEvent[] }) {
   const points = events.filter((event) => event.eventType === "suspicion_score_updated" || event.suspicionScore > 0);
   const data = points.map((event, index) => ({
@@ -804,7 +746,7 @@ function escapeHtml(text: string) {
     .replace(/'/g, "&#039;");
 }
 
-function exportStudentPdf(timeline: ProctoringTimelineResponse, events: TimelineEvent[], isDownload: boolean = false) {
+function exportStudentPdf(timeline: ProctoringTimelineResponse, events: TimelineEvent[]) {
   const score = timeline.finalSuspicionScore;
   const riskLevel = score >= 70 ? "SUSPICIOUS" : score >= 30 ? "WARNING" : "SAFE";
   
@@ -818,7 +760,7 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
     badgeClass = "gauge-warning-badge";
   }
 
-  const analysisMethodologyText = "The CheatLock AI monitoring engine records student exam sessions by continuously checking face tracking patterns, browser focus app-switching metrics, tab switching, and network disconnections. Severity weights are compiled automatically to compute a composite suspicion rating (0-100). Higher metrics indicate a higher probability of non-compliance. Instructors review the logged events to make final determination.";
+  const analysisMethodologyText = "This report lists backend-recorded proctoring events and the persisted cumulative suspicious score. Events and scores are review aids, not proof of misconduct; an instructor must review the underlying evidence before making a decision.";
 
   const htmlContent = `
     <html>
@@ -900,20 +842,20 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
             gap: 12px;
           }
           .logo-icon {
-            background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
-            color: #ffffff;
+            background: #020617;
             border-radius: 8px;
             width: 40px;
             height: 40px;
             display: flex;
             align-items: center;
             justify-content: center;
+            overflow: hidden;
             box-shadow: 0 4px 12px rgba(124, 58, 237, 0.2);
           }
-          .logo-icon svg {
-            width: 22px;
-            height: 22px;
-            stroke: currentColor;
+          .logo-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
           }
           .logo-text h1 {
             font-size: 20px;
@@ -1188,10 +1130,7 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
         <div class="header-container">
           <div class="logo-area">
             <div class="logo-icon">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                <path d="m9 11 2 2 4-4"/>
-              </svg>
+              <img src="/cheatlock-logo.png" alt="CheatLock logo" />
             </div>
             <div class="logo-text">
               <h1>CheatLock Replay Report</h1>
@@ -1294,7 +1233,7 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
                     ${
                       event.previewUrl || event.previewBase64
                         ? `<div class="event-image-container">
-                             <img class="event-image" src="${event.previewUrl || event.previewBase64}" alt="Camera Preview Snapshot" />
+                             <img class="event-image" src="${escapeHtml(event.previewUrl || event.previewBase64 || "")}" alt="Camera Preview Snapshot" />
                            </div>`
                         : ""
                     }
@@ -1322,16 +1261,12 @@ function exportStudentPdf(timeline: ProctoringTimelineResponse, events: Timeline
   `;
 
   const printWindow = window.open("", "_blank");
-  if (!printWindow) return;
+  if (!printWindow) return false;
   printWindow.document.write(htmlContent);
   printWindow.document.close();
 
-  if (isDownload) {
-    // Let browser prompt print immediately, which supports saving as PDF
-    printWindow.focus();
-    printWindow.print();
-  } else {
-    printWindow.focus();
-    printWindow.print();
-  }
+  // The browser print dialog provides both printing and Save as PDF.
+  printWindow.focus();
+  printWindow.print();
+  return true;
 }

@@ -44,7 +44,11 @@ function serializeCommunity(community) {
 }
 
 function normalizeStudentIds(students) {
-  return students
-    .map((student) => String(student).trim().toLowerCase())
-    .filter(Boolean);
+  return [
+    ...new Set(
+      students
+        .map((student) => String(student).trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  ];
 }

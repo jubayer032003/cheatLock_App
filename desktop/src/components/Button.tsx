@@ -1,5 +1,5 @@
 import React from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { tapScale } from "../motion/variants";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -15,6 +15,7 @@ export function Button({
   disabled,
   ...props
 }: ButtonProps) {
+  const reduceMotion = useReducedMotion();
   const baseStyle =
     "px-4 py-2 rounded-md font-medium flex items-center justify-center gap-2 select-none disabled:opacity-40 disabled:pointer-events-none text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base";
   
@@ -32,12 +33,13 @@ export function Button({
   return (
     <motion.button
       disabled={disabled || isLoading}
-      whileTap={tapScale}
+      whileTap={reduceMotion ? undefined : tapScale}
       className={`${baseStyle} ${variants[variant]} ${className}`}
+      aria-busy={isLoading || undefined}
       {...(props as any)}
     >
       {isLoading && (
-        <div className="h-4 w-4 animate-spin rounded-full border-2 border-t-transparent border-current" />
+        <div className="h-4 w-4 motion-safe:animate-spin rounded-full border-2 border-t-transparent border-current" aria-hidden="true" />
       )}
       {children}
     </motion.button>

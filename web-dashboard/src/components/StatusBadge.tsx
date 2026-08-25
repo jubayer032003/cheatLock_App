@@ -13,8 +13,9 @@ const statusLabels: Record<StudentStatus, string> = {
 };
 
 export function statusFromScore(score: number): StudentStatus {
-  if (score >= 70) return "SUSPICIOUS";
-  if (score >= 40) return "WARNING";
+  const normalized = Number.isFinite(Number(score)) ? Math.max(0, Math.min(100, Number(score))) : 0;
+  if (normalized >= 70) return "SUSPICIOUS";
+  if (normalized >= 40) return "WARNING";
   return "SAFE";
 }
 

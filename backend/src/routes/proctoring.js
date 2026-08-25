@@ -4,6 +4,7 @@ import {
   handleStudentProctoringEvent,
   isStudentProctoringEvent,
 } from "../socket/proctoring.js";
+import { logger } from "../services/logger.js";
 
 export const proctoringRouter = express.Router();
 
@@ -13,8 +14,12 @@ proctoringRouter.post(
   requireRole("STUDENT"),
   async (req, res, next) => {
     try {
-      console.log(`[Step 8] Backend: Received event: ${req.body?.eventName} from student: ${req.user?.identifier}. Payload size: ${JSON.stringify(req.body).length}. Time: ${Date.now()}`);
       const eventName = String(req.body?.eventName || "").trim();
+      logger.debug("Student proctoring HTTP event received.", {
+        eventName,
+        studentId: req.user?.identifier,
+        payloadBytes: Buffer.byteLength(JSON.stringify(req.body || {})),
+      });
       if (!isStudentProctoringEvent(eventName)) {
         const error = new Error("Unsupported proctoring event.");
         error.status = 400;

@@ -8,6 +8,8 @@ export type ProctoringEvent =
   | "suspicion_score_updated"
   | "ai_alert_created"
   | "camera_preview_updated"
+  | "screen_telemetry_uploaded"
+  | "student_heartbeat"
   | "live_student_list";
 
 export function createProctoringSocket(): Socket {
@@ -16,5 +18,6 @@ export function createProctoringSocket(): Socket {
       token: getAuthToken(),
     },
     transports: ["websocket"],
+    autoConnect: false,
   });
 }

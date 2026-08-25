@@ -232,8 +232,8 @@ If you just want to run the application, you can download the pre-compiled APK d
 
 | Variable | Description | Default / Example |
 | :--- | :--- | :--- |
-| `VITE_API_URL` | Base HTTP endpoint for Express backend | `http://localhost:5000/api` |
-| `VITE_SOCKET_URL` | Base WebSocket endpoint for Socket.IO | `http://localhost:5000` |
+| `VITE_API_BASE_URL` | Base HTTP and Socket.IO origin for the backend | `http://localhost:3000` |
+| `VITE_ENABLE_PROCTORING_TEST_TOOLS` | Enables local-only live-proctoring simulator controls | `false` |
 
 ---
 
@@ -267,11 +267,17 @@ If you just want to run the application, you can download the pre-compiled APK d
 
 - **Dynamic Token Verification**: All socket connections & HTTP requests require valid JWT headers.
 - **On-Device Machine Learning**: Face detection and OCR execute locally on client hardware to preserve candidate privacy and minimize latency.
-- **Tamper-Evident Logs**: Event snapshots are timestamped and cryptographically linked to active exam session IDs.
+- **Session-Scoped Logs**: Event snapshots are timestamped and associated with active exam session IDs for instructor review.
 
 ---
 
 ## 📄 License
+
+## Production Readiness
+
+The canonical backend source tree is `backend/src`. The root-level `src` tree is deprecated and must not be used for new backend work. See [DEPLOYMENT_PRODUCTION_READINESS.md](DEPLOYMENT_PRODUCTION_READINESS.md) for the source-of-truth map, environment inventory, Docker/Kubernetes notes, health endpoints, release checklist, and smoke-test plan.
+
+---
 
 Distributed under the **MIT License**. See `LICENSE` for more information.
 

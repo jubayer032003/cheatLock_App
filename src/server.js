@@ -1,12 +1,10 @@
 import cors from "cors";
-import dotenv from "dotenv";
 import express from "express";
 import helmet from "helmet";
 import http from "node:http";
 import mongoose from "mongoose";
 import dns from "node:dns";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { config, validateStartupConfig } from "./config.js";
 import { authRouter } from "./routes/auth.js";
 import { classesRouter } from "./routes/classes.js";
 import { communityRouter } from "./routes/community.js";
@@ -25,8 +23,7 @@ import { configureProctoringSocket } from "./socket/proctoring.js";
 import { rateLimiter } from "./middleware/rateLimiter.js";
 import { logger } from "./services/logger.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: resolve(__dirname, "../.env"), override: false });
+validateStartupConfig();
 
 if (process.env.MONGODB_DNS_SERVERS) {
   dns.setServers(
@@ -38,14 +35,37 @@ if (process.env.MONGODB_DNS_SERVERS) {
 
 const app = express();
 const server = http.createServer(app);
-const port = Number(process.env.PORT || 3000);
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || "*")
-  .split(",")
-  .map((origin) => origin.trim());
+const port = config.port;
+const defaultAllowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+];
+const configuredAllowedOrigins = [
+  config.cors.clientOrigin,
+  ...config.cors.allowedOrigins.split(","),
+]
+  .map((origin) => origin?.trim())
+  .filter(Boolean);
+const allowedOrigins = Array.from(new Set([...configuredAllowedOrigins, ...defaultAllowedOrigins]));
+const corsOrigin = allowedOrigins.includes("*") ? true : allowedOrigins;
 
 app.use(
   cors({
-    origin: allowedOrigins.includes("*") ? true : allowedOrigins,
+    origin: corsOrigin,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    optionsSuccessStatus: 204,
+  })
+);
+app.options(
+  "*",
+  cors({
+    origin: corsOrigin,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    optionsSuccessStatus: 204,
   })
 );
 app.use(helmet());
@@ -78,7 +98,7 @@ app.use("/public", publicApiRouter);
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins.includes("*") ? true : allowedOrigins,
+    origin: corsOrigin,
   },
 });
 app.set("io", io);
@@ -91,24 +111,11 @@ app.use((err, _req, res, _next) => {
   });
 });
 
-if (!process.env.MONGODB_URI) {
-  throw new Error("MONGODB_URI is missing. Add it to backend/.env.");
-}
-
-if (!process.env.JWT_SECRET) {
-  throw new Error("JWT_SECRET is missing. Add it to backend/.env.");
-}
-
-const mongoUriDisplay = process.env.MONGODB_URI.replace(
-  /\/\/([^:]+):([^@]+)@/,
-  "//$1:*****@"
-);
-console.log(`MongoDB connection type: ${process.env.MONGODB_URI.startsWith("mongodb+srv://") ? "mongodb+srv" : "mongodb://"}, URI: ${mongoUriDisplay}`);
-
 try {
-await mongoose.connect(process.env.MONGODB_URI, {
+  logger.info(`MongoDB connection type: ${config.mongodb.uri().startsWith("mongodb+srv://") ? "mongodb+srv" : "mongodb"}`);
+  await mongoose.connect(config.mongodb.uri(), {
     serverSelectionTimeoutMS: 10000,
-    dbName: process.env.MONGODB_DB_NAME || "cheatlock",
+    dbName: config.mongodb.dbName,
   });
 
   logger.info(`MongoDB connected successfully. Database: ${mongoose.connection.name}`);
@@ -117,6 +124,6 @@ await mongoose.connect(process.env.MONGODB_URI, {
     logger.info(`CheatLock backend running on http://localhost:${port}`);
   });
 } catch (error) {
-  logger.critical(`Failed to connect to MongoDB: ${error.message}`);
+  logger.critical(`Failed to connect to MongoDB: ${error.name || "ConnectionError"}`);
   process.exit(1);
 }

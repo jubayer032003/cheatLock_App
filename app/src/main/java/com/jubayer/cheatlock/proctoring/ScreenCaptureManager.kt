@@ -25,6 +25,7 @@ class ScreenCaptureManager(
     private var virtualDisplay: VirtualDisplay? = null
     private var lastSentAt = 0L
     private var stopped = false
+    private var isProcessingFrame = false
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -85,8 +86,13 @@ class ScreenCaptureManager(
                 availableReader.acquireLatestImage()?.close()
                 return@setOnImageAvailableListener
             }
+            if (isProcessingFrame) {
+                availableReader.acquireLatestImage()?.close()
+                return@setOnImageAvailableListener
+            }
 
             val image = runCatching { availableReader.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
+            isProcessingFrame = true
             try {
                 runCatching {
                     val snapshot = image.toJpegDataUrl()
@@ -99,6 +105,7 @@ class ScreenCaptureManager(
                 }
             } finally {
                 image.close()
+                isProcessingFrame = false
             }
         }, captureHandler)
     }
@@ -175,8 +182,8 @@ class ScreenCaptureManager(
     }
 
     private companion object {
-        const val SNAPSHOT_INTERVAL_MS = 20_000L // Reduced frequency for stability
-        const val MAX_PREVIEW_SIDE = 480
-        const val JPEG_QUALITY = 35
+        const val SNAPSHOT_INTERVAL_MS = 2_000L
+        const val MAX_PREVIEW_SIDE = 1280
+        const val JPEG_QUALITY = 80
     }
 }

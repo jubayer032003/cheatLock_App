@@ -30,6 +30,7 @@ export function UserManagementPage() {
   const [roleFilter, setRoleFilter] = useState("ALL");
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [temporaryCredentials, setTemporaryCredentials] = useState<Array<{ identifier: string; temporaryPassword: string }>>([]);
 
   // Create single user form state
   const [name, setName] = useState("");
@@ -114,10 +115,12 @@ export function UserManagementPage() {
   const handleBulkImport = async () => {
     setMessage("");
     setErrorMessage("");
+    setTemporaryCredentials([]);
     if (parsedPreview.length === 0) return;
     try {
       const res = await bulkImportTenantUsers(parsedPreview);
       setMessage(`Import complete. Successfully added ${res.importedCount} users. Skipped ${res.skippedCount}.`);
+      setTemporaryCredentials(res.temporaryCredentials || []);
       setCsvContent("");
       setParsedPreview([]);
       loadUsers();
@@ -139,8 +142,8 @@ export function UserManagementPage() {
   const handleResetPassword = async (userId: string) => {
     if (!confirm("Are you sure you want to reset this user's password?")) return;
     try {
-      await resetUserPassword(userId);
-      alert("Password has been reset to: CheatLock123!");
+      const result = await resetUserPassword(userId);
+      setMessage(`Password reset initiated. One-time reset token: ${result.resetToken}`);
     } catch {
       setErrorMessage("Failed to reset password.");
     }
@@ -211,6 +214,17 @@ export function UserManagementPage() {
         <div className="p-3 bg-red-950/20 border border-red-500/20 text-red-400 text-xs font-mono rounded flex items-center gap-2">
           <AlertCircle size={15} />
           {errorMessage}
+        </div>
+      )}
+
+      {temporaryCredentials.length > 0 && (
+        <div className="rounded border border-amber-500/30 bg-amber-950/20 p-3 text-xs text-amber-100">
+          <p className="font-bold">Copy these one-time credentials now. They are not shown again.</p>
+          <div className="mt-2 space-y-1 font-mono">
+            {temporaryCredentials.map((credential) => (
+              <p key={credential.identifier}>{credential.identifier}: {credential.temporaryPassword}</p>
+            ))}
+          </div>
         </div>
       )}
 

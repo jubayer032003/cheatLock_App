@@ -93,6 +93,5 @@ examSchema.index({ createdAt: -1 });
 examSchema.index({ status: 1, scheduledStartAt: 1, scheduledEndAt: 1 });
 examSchema.index({ assignedStudents: 1 });
 examSchema.index({ classIds: 1 });
-examSchema.index({ accessCode: 1 }, { unique: true });
 
 export const Exam = mongoose.model("Exam", examSchema);

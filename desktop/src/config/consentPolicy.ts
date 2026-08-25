@@ -1,0 +1,1 @@
+export const EXAM_CONSENT_POLICY_VERSION = "2026-07-25.1";

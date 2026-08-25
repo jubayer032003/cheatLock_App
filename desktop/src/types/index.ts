@@ -1,9 +1,18 @@
-export type UserRole = "STUDENT" | "TEACHER";
+export type UserRole =
+  | "SUPER_ADMIN"
+  | "INSTITUTION_ADMIN"
+  | "DEPARTMENT_ADMIN"
+  | "TEACHER"
+  | "PROCTOR"
+  | "STUDENT"
+  | "OBSERVER"
+  | "AUDITOR";
 
 export interface User {
   name: string;
   identifier: string;
   role: UserRole;
+  institutionName?: string;
   faceProfile?: {
     descriptor: number[];
     previewBase64: string;
@@ -32,6 +41,33 @@ export interface Exam {
   accessCode: string;
   accessLink: string;
   createdBy: string;
+  assignedStudents?: string[];
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
+}
+
+export type StudentNotificationType =
+  | "EXAM_CREATED"
+  | "EXAM_LIVE"
+  | "EXAM_ASSIGNED"
+  | "GRADE_ASSIGNED";
+
+export interface StudentNotification {
+  id: string;
+  studentId: string;
+  examId: string;
+  type: StudentNotificationType;
+  payload: {
+    title?: string;
+    accessCode?: string;
+    message?: string;
+    grade?: string | number;
+    feedback?: string;
+    [key: string]: unknown;
+  };
+  notified: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type SessionStatus =
@@ -85,12 +121,56 @@ export interface ProctoringEvent {
   studentId: string;
   studentName: string;
   eventType: string;
+  scoreDelta?: number;
+  totalSuspicionScore?: number;
   suspicionScore: number;
   alertMessage: string;
   severity: Severity;
+  ruleId?: string;
+  occurredAt?: string;
+  evidenceReference?: string;
   previewBase64?: string;
 }
 
 export interface ClientSettings {
   serverUrl: string;
 }
+
+export type {
+  ApiErrorCode,
+  ApiErrorResult,
+  AttemptStatus,
+  ConsentStatus,
+  DeviceReadinessReport,
+  ExamPreparationConsentRecord,
+  ExamPreparationPermissionStatus,
+  ExamPreparationReadinessReport,
+  ExamPreparationState,
+  ExamAvailabilityStatus,
+  ExamMonitoringPolicy,
+  IdentityVerificationStatus,
+  IdentityVerificationCode,
+  IdentityVerificationMethod,
+  IdentityVerificationResultRecord,
+  ExamMonitorErrorCode,
+  ExamMonitorName,
+  MonitoringStartupStatus,
+  MonitoringStatus,
+  MonitorState,
+  MonitorStatus,
+  HealthCheckResult,
+  NetworkProbeErrorCode,
+  NetworkProbeResult,
+  PermissionCapability,
+  PermissionCapabilityStatus,
+  ReadinessCheckId,
+  ReadinessCheckResult,
+  ReadinessCheckState,
+  ReadinessErrorCode,
+  ReadinessReportStatus,
+  ReadinessStatus,
+  RouteAuthState,
+  StudentExamRouteParams,
+  SuspicionEvent,
+  SubmissionStatus,
+} from "./examDomain";

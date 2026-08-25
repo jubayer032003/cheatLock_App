@@ -1,86 +1,98 @@
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { config } from "../config.js";
 import { logger } from "./logger.js";
 
-const s3Endpoint = process.env.S3_ENDPOINT || "http://localhost:9000";
-const s3AccessKey = process.env.S3_ACCESS_KEY || "cheatlock_admin";
-const s3SecretKey = process.env.S3_SECRET_KEY || "cheatlock_secret";
-const s3Bucket = process.env.S3_BUCKET || "cheatlock-telemetry";
-const s3Region = process.env.S3_REGION || "us-east-1";
+let cachedClient = null;
 
-logger.info(`Initializing S3/MinIO client at endpoint: ${s3Endpoint}, bucket: ${s3Bucket}`);
+function getS3Config() {
+  return config.s3();
+}
 
-const s3Client = new S3Client({
-  endpoint: s3Endpoint,
-  region: s3Region,
-  credentials: {
-    accessKeyId: s3AccessKey,
-    secretAccessKey: s3SecretKey,
-  },
-  forcePathStyle: true, // Required for MinIO local compatibility
-});
+function requireS3() {
+  const s3 = getS3Config();
+  if (!s3.enabled) {
+    throw new Error("S3 storage is not configured. Set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, and S3_SECRET_KEY.");
+  }
+  return s3;
+}
 
-/**
- * Strips base64 headers and uploads a raw binary buffer to MinIO S3 bucket.
- * 
- * @param {string} key Unique object storage file key path
- * @param {string} base64Data Base64 encoded string data
- * @param {string} contentType MIME type of the uploaded file
- * @returns {Promise<string>} S3 object URL
- */
+function getClient() {
+  if (cachedClient) return cachedClient;
+
+  const s3 = requireS3();
+  cachedClient = new S3Client({
+    endpoint: s3.endpoint,
+    region: s3.region,
+    credentials: {
+      accessKeyId: s3.accessKey,
+      secretAccessKey: s3.secretKey,
+    },
+    forcePathStyle: true,
+  });
+  logger.info("S3/MinIO telemetry storage is configured.");
+  return cachedClient;
+}
+
+export function isS3Configured() {
+  return getS3Config().enabled;
+}
+
 export async function uploadFrame(key, base64Data, contentType = "image/jpeg") {
-  try {
-    if (!base64Data) {
-      throw new Error("Cannot upload empty data to S3.");
-    }
+  const s3 = requireS3();
+  if (!key || !base64Data) {
+    throw new Error("S3 upload requires an object key and payload.");
+  }
 
-    // Strip out base64 prefix headers if present
+  try {
     const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, "");
     const buffer = Buffer.from(cleanBase64, "base64");
-
     const command = new PutObjectCommand({
-      Bucket: s3Bucket,
+      Bucket: s3.bucket,
       Key: key,
       Body: buffer,
+      ContentEncoding: "base64",
       ContentType: contentType,
     });
 
-    await s3Client.send(command);
-    
-    // Return relative identifier path key
+    await getClient().send(command);
     return key;
   } catch (error) {
-    logger.error(`Failed to upload object to MinIO S3 [Key: ${key}]: ${error.message}`);
+    logger.error(`Failed to upload telemetry object to S3: ${error.name || "UploadError"}`);
     throw error;
   }
 }
 
-/**
- * Generates a temporary secure pre-signed URL for viewing S3 assets.
- * 
- * @param {string} key Unique object key path
- * @param {number} expiresInSeconds URL expiration time
- * @returns {Promise<string>} Secure signed URL
- */
 export async function getSignedFrameUrl(key, expiresInSeconds = 3600) {
+  const s3 = requireS3();
+  if (!key) return "";
+
+  if (key.startsWith("data:") || key.startsWith("http")) {
+    return key;
+  }
+
   try {
-    if (!key) return "";
-
-    // If key is already a full external web url, bypass signing
-    if (key.startsWith("http://") || key.startsWith("https://")) {
-      return key;
-    }
-
     const command = new GetObjectCommand({
-      Bucket: s3Bucket,
+      Bucket: s3.bucket,
       Key: key,
     });
-
-    const url = await getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
-    return url;
+    return await getSignedUrl(getClient(), command, { expiresIn: expiresInSeconds });
   } catch (error) {
-    logger.error(`Failed to generate signed URL for S3 key [${key}]: ${error.message}`);
-    // Fallback to a direct endpoint URL if signing fails
-    return `${s3Endpoint}/${s3Bucket}/${key}`;
+    logger.error(`Failed to generate signed telemetry URL: ${error.name || "SigningError"}`);
+    throw error;
+  }
+}
+
+export async function deleteFrameKeys(keys = []) {
+  const uniqueKeys = [...new Set(keys.map((key) => String(key || "").trim()).filter(Boolean))];
+  if (!uniqueKeys.length || !isS3Configured()) return;
+
+  const s3 = requireS3();
+  for (let offset = 0; offset < uniqueKeys.length; offset += 1000) {
+    const batch = uniqueKeys.slice(offset, offset + 1000);
+    await getClient().send(new DeleteObjectsCommand({
+      Bucket: s3.bucket,
+      Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+    }));
   }
 }

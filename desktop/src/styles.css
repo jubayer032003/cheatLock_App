@@ -31,3 +31,14 @@
   background-color: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(4px);
 }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}

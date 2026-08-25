@@ -47,17 +47,15 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   const monitoringIntervalRef = useRef<number | null>(null);
   const healthCheckRef = useRef<number | null>(null);
   const lastHealthRef = useRef<AudioHealthStatus>("idle");
+  const speechProbabilityRef = useRef(0);
 
   // Enumerate devices on mount
   useEffect(() => {
     async function init() {
-      const granted = await audioManager.requestPermission();
-      if (granted) {
-        const devs = await audioManager.enumerateDevices();
-        setDevices(devs);
-        if (devs.length > 0 && !selectedDeviceId) {
-          setSelectedDeviceId(devs[0].deviceId);
-        }
+      const devs = await audioManager.enumerateDevices();
+      setDevices(devs);
+      if (devs.length > 0 && !selectedDeviceId) {
+        setSelectedDeviceId(devs[0].deviceId);
       }
     }
     init();
@@ -116,6 +114,13 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
       const examId = examIdRef.current;
       if (!examId || !user) return;
 
+      // VOICE_CLEARED is a UI-only state reset, not a security violation.
+      // Do NOT increment warning counters, suspicion score, or send telemetry.
+      if (event.type === "VOICE_CLEARED") {
+        setIsSpeechDetected(false);
+        return;
+      }
+
       setIsSpeechDetected(event.type === "VOICE_DETECTED" || event.type === "CONTINUOUS_SPEECH");
 
       // Report to centralized suspicion score engine
@@ -154,6 +159,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
       monitoringIntervalRef.current = window.setInterval(() => {
         const prob = vadEngine.evaluate();
         setSpeechProbability(prob);
+        speechProbabilityRef.current = prob;
       }, 100);
 
       // Health + violation tick loop — runs every 1 second
@@ -173,10 +179,10 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         lastHealthRef.current = health;
 
         // Feed speech probability to violation manager for consecutive-second tracking
-        violationManager.tick(speechProbability);
+        violationManager.tick(speechProbabilityRef.current);
       }, 1000);
     },
-    [selectedDeviceId, calibrationState, handleViolation, showToast, speechProbability]
+    [selectedDeviceId, calibrationState, handleViolation, showToast]
   );
 
   const stopMonitoring = useCallback(() => {

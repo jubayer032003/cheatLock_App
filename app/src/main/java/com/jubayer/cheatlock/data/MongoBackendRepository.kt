@@ -1,12 +1,22 @@
 package com.jubayer.cheatlock.data
 
+import com.jubayer.cheatlock.BuildConfig
+
 import android.content.Context
 import android.provider.Settings
-import com.jubayer.cheatlock.BuildConfig
 import com.jubayer.cheatlock.model.Exam
 import com.jubayer.cheatlock.model.ExamAttendanceOverview
 import com.jubayer.cheatlock.model.ExamSubmission
 import com.jubayer.cheatlock.model.ExamSession
+import com.jubayer.cheatlock.model.CreateSelfExamSessionRequest
+import com.jubayer.cheatlock.model.SaveSelfExamAnswerRequest
+import com.jubayer.cheatlock.model.SelfExamAnswer
+import com.jubayer.cheatlock.model.SelfExamChapter
+import com.jubayer.cheatlock.model.SelfExamClass
+import com.jubayer.cheatlock.model.SelfExamPayloadResponse
+import com.jubayer.cheatlock.model.SelfExamResultResponse
+import com.jubayer.cheatlock.model.SelfExamSession
+import com.jubayer.cheatlock.model.SelfExamSubject
 import com.jubayer.cheatlock.model.StudentNotification
 import com.jubayer.cheatlock.model.TeacherClass
 import com.jubayer.cheatlock.model.UserAccount
@@ -223,9 +233,9 @@ class MongoBackendRepository(
         }
     }
 
-    suspend fun lockSession(reason: String, examId: String? = null): ExamSession {
+    suspend fun lockSession(reason: String, examId: String? = null, suspicionScore: Int? = null): ExamSession {
         return runBackendRequest {
-            api.lockSession(bearerToken(), LockSessionRequest(reason, examId)).session
+            api.lockSession(bearerToken(), LockSessionRequest(reason, examId, suspicionScore)).session
         }
     }
 
@@ -278,13 +288,17 @@ class MongoBackendRepository(
     }
 
     suspend fun sendProctoringEvent(request: ProctoringEventRequest): LiveStudent {
-        Log.d("RUNTIME_TRACE", "[Step 4] MongoBackendRepository: BEFORE Retrofit request. Event: ${request.eventName}, examId: ${request.examId}, studentId: ${request.studentId}, payload size: ${request.previewBase64?.length ?: 0}. Timestamp: ${System.currentTimeMillis()}")
+        if (BuildConfig.ENABLE_RUNTIME_TRACING) {
+            Log.d("RUNTIME_TRACE", "[Step 4] MongoBackendRepository: BEFORE Retrofit request. Event: ${request.eventName}, examId: ${request.examId}, studentId: ${request.studentId}, payload size: ${request.previewBase64?.length ?: 0}. Timestamp: ${System.currentTimeMillis()}")
+        }
         return try {
             val result = api.sendProctoringEvent(bearerToken(), request).student
-            Log.d("RUNTIME_TRACE", "[Step 5] MongoBackendRepository: AFTER Retrofit response (Success). Event: ${request.eventName}, studentId: ${result.studentId}. Timestamp: ${System.currentTimeMillis()}")
+            if (BuildConfig.ENABLE_RUNTIME_TRACING) {
+                Log.d("RUNTIME_TRACE", "[Step 5] MongoBackendRepository: AFTER Retrofit response (Success). Event: ${request.eventName}, studentId: ${result.studentId}. Timestamp: ${System.currentTimeMillis()}")
+            }
             result
         } catch (e: Exception) {
-            Log.e("RUNTIME_TRACE", "[Step 5] MongoBackendRepository: AFTER Retrofit response (Failure). Event: ${request.eventName}, error: ${e.message}. Timestamp: ${System.currentTimeMillis()}")
+            Log.e("RUNTIME_TRACE", "Proctoring event request failed.", e)
             throw e
         }
     }
@@ -293,6 +307,60 @@ class MongoBackendRepository(
         return runBackendRequest {
             api.resetSession(bearerToken(), studentId, ResetSessionRequest(examId)).session
         }
+    }
+
+    suspend fun getSelfExamClasses(): List<SelfExamClass> {
+        return runBackendRequest { api.getSelfExamClasses(bearerToken()).classes }
+    }
+
+    suspend fun getSelfExamSubjects(classId: String): List<SelfExamSubject> {
+        return runBackendRequest { api.getSelfExamSubjects(bearerToken(), classId).subjects }
+    }
+
+    suspend fun getSelfExamChapters(subjectId: String): List<SelfExamChapter> {
+        return runBackendRequest { api.getSelfExamChapters(bearerToken(), subjectId).chapters }
+    }
+
+    suspend fun getActiveSelfExamSession(): SelfExamSession? {
+        return runBackendRequest { api.getActiveSelfExamSession(bearerToken()).session }
+    }
+
+    suspend fun createSelfExamSession(request: CreateSelfExamSessionRequest): SelfExamSession {
+        return runBackendRequest { api.createSelfExamSession(bearerToken(), request).session }
+            ?: error("Self exam session was not created.")
+    }
+
+    suspend fun startSelfExamSession(sessionId: String): SelfExamPayloadResponse {
+        return runBackendRequest { api.startSelfExamSession(bearerToken(), sessionId) }
+    }
+
+    suspend fun getSelfExamSession(sessionId: String): SelfExamPayloadResponse {
+        return runBackendRequest { api.getSelfExamSession(bearerToken(), sessionId) }
+    }
+
+    suspend fun saveSelfExamAnswer(
+        sessionId: String,
+        questionId: String,
+        selectedOptionId: String?
+    ): SelfExamAnswer {
+        return runBackendRequest {
+            api.saveSelfExamAnswer(
+                bearerToken(),
+                sessionId,
+                SaveSelfExamAnswerRequest(
+                    questionId = questionId,
+                    selectedOptionId = selectedOptionId
+                )
+            ).answer
+        }
+    }
+
+    suspend fun submitSelfExam(sessionId: String): SelfExamResultResponse {
+        return runBackendRequest { api.submitSelfExam(bearerToken(), sessionId) }
+    }
+
+    suspend fun getSelfExamResult(sessionId: String): SelfExamResultResponse {
+        return runBackendRequest { api.getSelfExamResult(bearerToken(), sessionId) }
     }
 
     suspend fun validateSession(): UserAccount? {
@@ -327,6 +395,11 @@ class MongoBackendRepository(
         sessionManager.logout()
     }
 
+    suspend fun deleteAccount(password: String) {
+        runBackendRequest { api.deleteAccount(bearerToken(), DeleteAccountRequest(password)) }
+        sessionManager.logout()
+    }
+
     private fun bearerToken(): String {
         val token = sessionManager.getToken()
             ?: error("You need to log in again.")
@@ -357,7 +430,7 @@ class MongoBackendRepository(
             result
         } catch (error: Exception) {
             val resolvedError = when (error) {
-                is HttpException -> IllegalStateException(readBackendMessage(error))
+                is HttpException -> IllegalStateException("${readBackendMessage(error)}\nServer: $baseUrl")
                 is IOException -> IllegalStateException(buildConnectionHelpMessage(error))
                 is IllegalStateException -> error
                 else -> IllegalStateException(error.message ?: "An unexpected backend error occurred.")
@@ -389,7 +462,13 @@ class MongoBackendRepository(
             .find(raw)
             ?.groupValues
             ?.getOrNull(1)
-        return message ?: "Backend request failed (${error.code()})."
+        val plainText = raw
+            .replace(Regex("<[^>]+>"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .takeIf { it.isNotEmpty() }
+            ?.take(220)
+        return message ?: plainText ?: "Backend request failed (${error.code()})."
     }
 
     private companion object {

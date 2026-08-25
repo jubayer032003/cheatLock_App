@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log*
+.env
+.env.*
+!.env.example
+dist
+coverage
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*secret*.json
+*secret*.yaml
+*secret*.yml

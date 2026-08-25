@@ -2,6 +2,8 @@ import { Camera, Monitor, Send, ShieldCheck, Pause, Play, Lock, ShieldX, FileTex
 import { StatusBadge, statusFromScore } from "./StatusBadge";
 import { Card, EmptyState, cn } from "./ui";
 import type { LiveStudent, IntegrityDecision } from "../types";
+import { useState } from "react";
+import { scorePercentage } from "../lib/scoreMetrics";
 
 interface StudentDetailProps {
   student: LiveStudent | null;
@@ -16,6 +18,8 @@ interface StudentDetailProps {
   onSendCommand: (studentId: string, cmd: string, msg?: string) => void;
   onSaveReview: (studentId: string) => Promise<void>;
   onOpen: (student: LiveStudent) => void;
+  pendingCommandKey?: string;
+  commandFeedback?: string;
 }
 
 export function StudentDetail({
@@ -31,66 +35,81 @@ export function StudentDetail({
   onSendCommand,
   onSaveReview,
   onOpen,
+  pendingCommandKey = "",
+  commandFeedback = "",
 }: StudentDetailProps) {
+  const [confirmCommand, setConfirmCommand] = useState<{ command: string; label: string } | null>(null);
+
   if (!student) {
     return (
-      <Card className="p-6 bg-slate-900 border-slate-800 text-center">
+      <Card className="rounded-lg border-slate-800 bg-slate-950 p-6 text-center">
         <EmptyState icon={UserRound} title="No student selected" description="Select any student card to inspect webcam feeds, snapshots, and execute proctor actions." />
       </Card>
     );
   }
 
-  const status = statusFromScore(student.suspicionScore);
+  const percentage = scorePercentage(student);
+  const status = statusFromScore(percentage);
   const cameraSrc = student.previewUrl || student.previewBase64;
   const screenSrc = student.screenBase64;
+  const isSending = (command: string) => pendingCommandKey === `${student.studentId}:${command}`;
+  const sendStudentCommand = (command: string, message?: string) => {
+    onSendCommand(student.studentId, command, message);
+  };
+  const requestHighImpactCommand = (command: string, label: string) => setConfirmCommand({ command, label });
 
   return (
-    <Card className="p-5 bg-slate-905 border-slate-800 flex flex-col gap-5">
-      <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
-        <div>
-          <h2 className="text-base font-bold text-white">{student.studentName}</h2>
+    <Card className="flex flex-col gap-5 rounded-lg border-slate-800 bg-slate-950 p-5 shadow-xl shadow-slate-950/20">
+      <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-4">
+        <div className="min-w-0">
+          <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Selected student</p>
+          <h2 className="mt-1 truncate text-lg font-black text-white">{student.studentName}</h2>
           <p className="text-xs text-slate-500 font-mono">{student.rollId || student.studentId}</p>
         </div>
         <StatusBadge status={status} />
       </div>
 
       <div className="space-y-2">
-        <div className="flex rounded border border-slate-800 bg-slate-955 p-0.5">
+        <div className="flex rounded-md border border-slate-800 bg-slate-900 p-1">
           <button 
             type="button" 
             onClick={() => setDetailTab("camera")}
-            className={cn("flex-1 text-center py-1 text-xs font-mono rounded", detailTab === "camera" ? "bg-slate-800 text-white font-bold" : "text-slate-400 hover:text-slate-200")}
+            className={cn("flex-1 rounded px-2 py-1.5 text-center text-xs font-bold", detailTab === "camera" ? "bg-cyan-500 text-slate-950" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200")}
           >
             Webcam Feed
           </button>
           <button 
             type="button" 
             onClick={() => setDetailTab("screen")}
-            className={cn("flex-1 text-center py-1 text-xs font-mono rounded", detailTab === "screen" ? "bg-slate-800 text-white font-bold" : "text-slate-400 hover:text-slate-200")}
+            className={cn("flex-1 rounded px-2 py-1.5 text-center text-xs font-bold", detailTab === "screen" ? "bg-cyan-500 text-slate-950" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200")}
           >
             Screen Snapshot
           </button>
         </div>
 
-        <div className="relative aspect-video rounded overflow-hidden bg-slate-950 border border-slate-850">
+        <div className="relative aspect-video overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
           {detailTab === "camera" ? (
             cameraSrc ? (
               <img className="h-full w-full object-cover" src={cameraSrc} alt="Webcam Feed" />
             ) : (
-              <div className="grid h-full place-items-center text-slate-700 text-xs font-mono"><Camera size={28} /> No Camera Stream</div>
+              <div className="grid h-full place-items-center text-xs font-mono text-slate-600"><Camera size={28} /> No Camera Stream</div>
             )
           ) : (
             screenSrc ? (
               <img className="h-full w-full object-contain bg-black" src={screenSrc} alt="Screen Feed" />
             ) : (
-              <div className="grid h-full place-items-center text-slate-700 text-xs font-mono"><Monitor size={28} /> No Screen Snapshot</div>
+              <div className="grid h-full place-items-center text-xs font-mono text-slate-600"><Monitor size={28} /> No Screen Snapshot</div>
             )
           )}
         </div>
       </div>
 
       <div className="space-y-2.5">
-        <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400">AI Subsystems Status</h3>
+        <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-500">Monitoring status</h3>
+        <div className="rounded-md border border-slate-800 bg-slate-900 p-3 text-xs font-mono text-slate-300">
+          Suspicion score: <span className="font-bold text-white">{percentage}/100</span>
+          {student.scoreMetrics?.updatedAt ? <span className="ml-2 text-slate-500">Updated {new Date(student.scoreMetrics.updatedAt).toLocaleTimeString()}</span> : null}
+        </div>
         <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
           <DetailBadge label="Face tracking" value={student.faceStatus || "Matching"} highlight={student.faceStatus === "Missing"} />
           <DetailBadge label="Audio activity" value={student.audioStatus || "Quiet"} highlight={student.audioStatus === "Speech detected"} />
@@ -99,24 +118,28 @@ export function StudentDetail({
         </div>
       </div>
 
-      <div className="space-y-3 pt-3 border-t border-slate-800">
-        <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400">Proctor Controls</h3>
+      <div className="space-y-3 border-t border-slate-800 pt-4">
+        <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-500">Proctor actions</h3>
         
         <div className="flex gap-2">
+          <label className="sr-only" htmlFor="proctor-warning-message">Warning message for selected student</label>
           <input 
+            id="proctor-warning-message"
             type="text" 
             placeholder="Warning message..." 
             value={warningMsg}
             onChange={(e) => setWarningMsg(e.target.value)}
-            className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-202 placeholder-slate-650 focus:border-violet-505"
+            className="flex-1 rounded border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-202 placeholder-slate-650 focus:border-cyan-400"
           />
           <button 
             type="button"
             onClick={() => {
-              onSendCommand(student.studentId, "WARN_STUDENT", warningMsg);
+              sendStudentCommand("WARN_STUDENT", warningMsg);
               setWarningMsg("");
             }}
-            className="bg-violet-600 hover:bg-violet-700 text-white rounded p-1.5 flex items-center justify-center transition"
+            disabled={isSending("WARN_STUDENT")}
+            aria-label={`Send warning to ${student.studentName || student.studentId}`}
+            className="flex items-center justify-center rounded bg-cyan-500 p-1.5 text-slate-950 transition hover:bg-cyan-400 disabled:opacity-50"
           >
             <Send size={14} />
           </button>
@@ -125,62 +148,96 @@ export function StudentDetail({
         <div className="grid grid-cols-2 gap-2 text-xs">
           <button 
             type="button" 
-            onClick={() => onSendCommand(student.studentId, "REQUEST_LIVENESS")}
-            className="flex items-center justify-center gap-1.5 py-2 rounded bg-slate-950 border border-slate-800 hover:bg-slate-800 transition text-slate-300 font-medium"
+            onClick={() => sendStudentCommand("REQUEST_LIVENESS")}
+            disabled={isSending("REQUEST_LIVENESS")}
+            className="flex items-center justify-center gap-1.5 rounded border border-slate-800 bg-slate-900 py-2 font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
           >
             <ShieldCheck size={13} className="text-emerald-400" />
             Liveness Challenge
           </button>
           <button 
             type="button" 
-            onClick={() => onSendCommand(student.studentId, "REQUEST_ROOM_SCAN")}
-            className="flex items-center justify-center gap-1.5 py-2 rounded bg-slate-950 border border-slate-800 hover:bg-slate-800 transition text-slate-300 font-medium"
+            onClick={() => sendStudentCommand("REQUEST_ROOM_SCAN")}
+            disabled={isSending("REQUEST_ROOM_SCAN")}
+            className="flex items-center justify-center gap-1.5 rounded border border-slate-800 bg-slate-900 py-2 font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
           >
             <Camera size={13} className="text-amber-400" />
             Room Scan
           </button>
           <button 
             type="button" 
-            onClick={() => onSendCommand(student.studentId, "PAUSE_EXAM")}
-            className="flex items-center justify-center gap-1.5 py-2 rounded bg-slate-950 border border-slate-800 hover:bg-slate-800 transition text-slate-300 font-medium"
+            onClick={() => requestHighImpactCommand("PAUSE_EXAM", "pause this student's exam")}
+            disabled={isSending("PAUSE_EXAM")}
+            className="flex items-center justify-center gap-1.5 rounded border border-slate-800 bg-slate-900 py-2 font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
           >
             <Pause size={13} className="text-violet-400" />
             Pause Exam
           </button>
           <button 
             type="button" 
-            onClick={() => onSendCommand(student.studentId, "RESUME_EXAM")}
-            className="flex items-center justify-center gap-1.5 py-2 rounded bg-slate-950 border border-slate-800 hover:bg-slate-800 transition text-slate-300 font-medium"
+            onClick={() => sendStudentCommand("RESUME_EXAM")}
+            disabled={isSending("RESUME_EXAM")}
+            className="flex items-center justify-center gap-1.5 rounded border border-slate-800 bg-slate-900 py-2 font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
           >
             <Play size={13} className="text-emerald-400" />
             Resume Exam
           </button>
           <button 
             type="button" 
-            onClick={() => onSendCommand(student.studentId, "LOCK_EXAM")}
-            className="flex items-center justify-center gap-1.5 py-2 rounded bg-red-955/20 border border-red-500/20 hover:bg-red-955/40 transition text-red-400 font-bold"
+            onClick={() => requestHighImpactCommand("LOCK_EXAM", "lock this student's exam")}
+            disabled={isSending("LOCK_EXAM")}
+            className="flex items-center justify-center gap-1.5 rounded border border-rose-500/25 bg-rose-500/10 py-2 font-bold text-rose-300 transition hover:bg-rose-500/15 disabled:opacity-50"
           >
             <Lock size={13} />
             Lock Student
           </button>
           <button 
             type="button" 
-            onClick={() => onSendCommand(student.studentId, "END_EXAM")}
-            className="flex items-center justify-center gap-1.5 py-2 rounded bg-slate-950 border border-slate-850 hover:bg-slate-800 transition text-slate-400 font-medium"
+            onClick={() => requestHighImpactCommand("END_EXAM", "force end this student's exam")}
+            disabled={isSending("END_EXAM")}
+            className="flex items-center justify-center gap-1.5 rounded border border-slate-800 bg-slate-900 py-2 font-medium text-slate-400 transition hover:bg-slate-800 disabled:opacity-50"
           >
             <ShieldX size={13} />
             Force End Exam
           </button>
         </div>
+        {commandFeedback && <p className="text-[11px] text-slate-400" role="status">{commandFeedback}</p>}
+        {confirmCommand && (
+          <div className="rounded-md border border-amber-400/25 bg-amber-400/10 p-3 text-xs text-amber-100" role="alertdialog" aria-modal="false" aria-labelledby="confirm-command-title">
+            <p id="confirm-command-title" className="font-bold">Confirm action for {student.studentName || student.studentId}</p>
+            <p className="mt-1 text-amber-100/80">This will {confirmCommand.label}. Confirm only if you are acting on the selected student.</p>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className="rounded bg-amber-400 px-3 py-1.5 font-bold text-slate-950"
+                onClick={() => {
+                  sendStudentCommand(confirmCommand.command);
+                  setConfirmCommand(null);
+                }}
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                className="rounded border border-amber-400/30 px-3 py-1.5 text-amber-100"
+                onClick={() => setConfirmCommand(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="space-y-3 pt-3 border-t border-slate-800 font-mono text-xs">
-        <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-400">Integrity Flags & Notes</h3>
+      <div className="space-y-3 border-t border-slate-800 pt-4 font-mono text-xs">
+        <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-500">Integrity notes</h3>
         <div className="flex gap-2">
+          <label className="sr-only" htmlFor="integrity-decision">Integrity review decision</label>
           <select 
+            id="integrity-decision"
             value={integrityDecision} 
             onChange={(e) => setIntegrityDecision(e.target.value as IntegrityDecision)}
-            className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-slate-303"
+            className="flex-1 rounded border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-slate-303"
           >
             <option value="PENDING">Pending Review</option>
             <option value="CLEAN">Clean Pass</option>
@@ -188,17 +245,19 @@ export function StudentDetail({
             <option value="DISQUALIFIED">Disqualify Student</option>
           </select>
         </div>
+        <label className="sr-only" htmlFor="integrity-private-note">Private examiner notes</label>
         <textarea 
+          id="integrity-private-note"
           placeholder="Enter private examiner notes..." 
           value={privateNote}
           onChange={(e) => setPrivateNote(e.target.value)}
           rows={2}
-          className="w-full bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-202 placeholder-slate-700 resize-none focus:border-violet-500"
+          className="w-full resize-none rounded border border-slate-800 bg-slate-900 p-2.5 text-slate-202 placeholder-slate-700 focus:border-cyan-400"
         />
         <button 
           type="button"
           onClick={() => onSaveReview(student.studentId)}
-          className="w-full py-2 bg-violet-600 hover:bg-violet-700 text-white rounded font-bold transition flex items-center justify-center gap-1.5"
+          className="flex w-full items-center justify-center gap-1.5 rounded bg-cyan-500 py-2 font-bold text-slate-950 transition hover:bg-cyan-400"
         >
           <FileText size={13} /> Save review flag
         </button>

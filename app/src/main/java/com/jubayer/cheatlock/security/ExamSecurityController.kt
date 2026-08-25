@@ -1,6 +1,7 @@
 package com.jubayer.cheatlock.security
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.os.Build
 import android.util.Log
 import android.view.WindowManager
@@ -18,15 +19,22 @@ class ExamSecurityController(
     private val onScreenCaptureAttempt: () -> Unit
 ) {
     private var active = false
+    private var lockTaskStartAttempted = false
     private var screenCaptureCallback: Activity.ScreenCaptureCallback? = null
 
     fun isActive(): Boolean = active
 
+    fun prepareLockTaskForExamStart() {
+        startLockTaskIfNeeded()
+    }
+
     fun setEnabled(enabled: Boolean) {
-        if (enabled) {
-            applyProtection()
+        if (enabled && !active) {
+            applyProtection(allowLockTaskPrompt = true)
             active = true
-        } else if (active) {
+        } else if (enabled) {
+            applyProtection(allowLockTaskPrompt = false)
+        } else if (active || lockTaskStartAttempted || isLockTaskModeActive()) {
             removeProtection()
             active = false
         }
@@ -35,11 +43,11 @@ class ExamSecurityController(
     /** Re-apply flags after resume/focus — some OEMs clear them transiently. */
     fun reapplyIfActive() {
         if (active) {
-            applyProtection()
+            applyProtection(allowLockTaskPrompt = false)
         }
     }
 
-    private fun applyProtection() {
+    private fun applyProtection(allowLockTaskPrompt: Boolean) {
         val window = activity.window
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -52,11 +60,8 @@ class ExamSecurityController(
             }
         }
 
-        // Trigger native Android screen pinning / Lock Task Mode
-        runCatching {
-            activity.startLockTask()
-        }.onFailure { error ->
-            Log.w("CHEATLOCK_FLOW", "Failed to startLockTask(): ${error.message}")
+        if (allowLockTaskPrompt) {
+            startLockTaskIfNeeded()
         }
 
         enterImmersiveMode()
@@ -84,6 +89,23 @@ class ExamSecurityController(
 
         exitImmersiveMode()
         unregisterScreenCaptureCallback()
+        lockTaskStartAttempted = false
+    }
+
+    private fun startLockTaskIfNeeded() {
+        if (lockTaskStartAttempted || isLockTaskModeActive()) return
+
+        lockTaskStartAttempted = true
+        runCatching {
+            activity.startLockTask()
+        }.onFailure { error ->
+            Log.w("CHEATLOCK_FLOW", "Failed to startLockTask(): ${error.message}")
+        }
+    }
+
+    private fun isLockTaskModeActive(): Boolean {
+        val activityManager = activity.getSystemService(ActivityManager::class.java) ?: return false
+        return activityManager.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
     }
 
     private fun enterImmersiveMode() {

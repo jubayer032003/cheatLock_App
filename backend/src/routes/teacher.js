@@ -8,6 +8,7 @@ import { Submission } from "../models/Submission.js";
 import { StudentNotification } from "../models/StudentNotification.js";
 import { getSignedFrameUrl } from "../services/s3.js";
 import { generateExamReportPdf } from "../services/pdfGenerator.js";
+import { authoritativeSuspicionScore } from "../services/scoreContract.js";
 import {
   notifyGradeAssigned,
   serializeNotification,
@@ -15,9 +16,11 @@ import {
 import {
   buildLiveProctoringPayload,
   handleTeacherProctoringTestEvent,
+  normalizeScoreMetrics,
 } from "../socket/proctoring.js";
 
 export const teacherRouter = express.Router();
+const MAX_INLINE_TIMELINE_PREVIEW_LENGTH = 250_000;
 
 teacherRouter.get(
   "/exams/:examId/live-proctoring",
@@ -60,12 +63,14 @@ teacherRouter.get(
         throw error;
       }
 
-      const studentId = String(req.params.studentId || "").trim().toLowerCase();
+      const studentId = normalizeStudentId(req.params.studentId);
+      const studentIds = studentIdVariants(studentId);
       const [session, events, review] = await Promise.all([
-        ExamSession.findOne({ examId: exam._id, studentId }).lean(),
-        ProctoringEvent.find({ examId: exam._id, studentId }).sort({ createdAt: 1 }).lean(),
-        IntegrityReview.findOne({ examId: exam._id, studentId }).lean(),
+        ExamSession.findOne({ examId: exam._id, studentId: { $in: studentIds } }).lean(),
+        fetchTimelineEvents(exam._id, studentIds),
+        IntegrityReview.findOne({ examId: exam._id, studentId: { $in: studentIds } }).lean(),
       ]);
+      const resolvedStudentId = session?.studentId || events[0]?.studentId || studentId;
 
       res.json({
         exam: {
@@ -73,35 +78,21 @@ teacherRouter.get(
           title: exam.title,
         },
         student: {
-          studentId,
-          studentName: session?.studentName || events[0]?.studentName || studentId,
+          studentId: resolvedStudentId,
+          studentName: session?.studentName || events[0]?.studentName || resolvedStudentId,
           onlineStatus: session?.onlineStatus || "OFFLINE",
           status: session?.status || "NOT_STARTED",
         },
-        finalSuspicionScore: session?.suspicionScore || events.at(-1)?.suspicionScore || 0,
+        finalSuspicionScore: session?.suspicionScore || events[events.length - 1]?.suspicionScore || 0,
+        scoreMetrics: normalizeScoreMetrics({
+          score: session?.suspicionScore || events[events.length - 1]?.suspicionScore || 0,
+          suspiciousActivityCount: events.filter((event) => event.eventType === "ai_alert_created").length,
+          capturedFrameCount: events.filter((event) => event.previewBase64 || event.previewUrl).length,
+          processedFrameCount: events.length,
+          updatedAt: session?.updatedAt || events[events.length - 1]?.createdAt,
+        }),
         review: review ? serializeReview(review) : null,
-        timelineEvents: await Promise.all(
-          events.map(async (event) => {
-            let previewUrl = event.previewUrl || "";
-            if (event.previewBase64 && !event.previewBase64.startsWith("data:") && !event.previewBase64.startsWith("http")) {
-              try {
-                previewUrl = await getSignedFrameUrl(event.previewBase64);
-              } catch (err) {
-                console.error("Failed to sign frame URL for timeline:", err);
-              }
-            }
-            return {
-              id: event._id.toString(),
-              eventType: event.eventType,
-              timestamp: event.createdAt,
-              alertMessage: event.alertMessage || "",
-              suspicionScore: event.suspicionScore || 0,
-              severity: event.severity || "low",
-              previewUrl,
-              previewBase64: event.previewBase64 || "",
-            };
-          })
-        ),
+        timelineEvents: await Promise.all(events.map(serializeTimelineEvent)),
       });
     } catch (error) {
       next(error);
@@ -341,8 +332,8 @@ teacherRouter.put(
       const grade = Number(req.body?.grade);
       const feedback = String(req.body?.feedback || "").trim();
 
-      if (!Number.isFinite(grade)) {
-        const error = new Error("A valid numeric grade is required.");
+      if (!Number.isFinite(grade) || grade < 0 || grade > 100) {
+        const error = new Error("A grade between 0 and 100 is required.");
         error.status = 400;
         throw error;
       }
@@ -444,6 +435,121 @@ function isTestToolsEnabled() {
   return process.env.ENABLE_PROCTORING_TEST_TOOLS === "true" || process.env.NODE_ENV !== "production";
 }
 
+async function serializeTimelineEvent(event) {
+  let previewUrl = event.previewUrl || "";
+  let previewBase64 = event.previewBase64 || "";
+
+  if (previewBase64 && !previewBase64.startsWith("data:") && !previewBase64.startsWith("http")) {
+    try {
+      previewUrl = await getSignedFrameUrl(previewBase64);
+      previewBase64 = "";
+    } catch (err) {
+      console.error("Failed to sign frame URL for timeline:", err);
+    }
+  } else if (previewBase64.length > MAX_INLINE_TIMELINE_PREVIEW_LENGTH) {
+    previewBase64 = "";
+  }
+
+  return {
+    id: event._id.toString(),
+    eventType: event.eventType,
+    timestamp: event.createdAt,
+    alertMessage: event.alertMessage || "",
+    suspicionScore: event.suspicionScore || 0,
+    scoreDelta: event.scoreDelta || 0,
+    totalSuspicionScore: event.totalSuspicionScore ?? event.suspicionScore ?? 0,
+    ruleId: event.ruleId || event.eventType,
+    occurredAt: event.occurredAt || event.createdAt,
+    evidenceReference: event.evidenceReference || "",
+    severity: event.severity || "low",
+    confidence: event.confidence ?? null,
+    evidenceId: event.evidenceId || "",
+    evidenceIds: event.evidenceIds || [],
+    priority: event.priority || "routine",
+    retentionClass: event.retentionClass || "routine",
+    suspiciousEventIds: event.suspiciousEventIds || [],
+    promotedAt: event.promotedAt || null,
+    promotedBy: event.promotedBy || "",
+    promotionReason: event.promotionReason || "",
+    retentionExpiresAt: event.retentionExpiresAt || null,
+    sequenceNumber: event.sequenceNumber || 0,
+    sessionId: event.sessionId || "",
+    captureTiming: event.captureTiming || null,
+    metadata: event.metadata || {},
+    scoreMetrics: normalizeScoreMetrics({
+      score: event.suspicionScore || 0,
+      suspiciousActivityCount: event.eventType === "ai_alert_created" ? 1 : 0,
+      capturedFrameCount: event.previewBase64 || event.previewUrl ? 1 : 0,
+      processedFrameCount: 1,
+      updatedAt: event.createdAt,
+    }),
+    previewUrl,
+    previewBase64,
+  };
+}
+
+function normalizeStudentId(studentId) {
+  return String(studentId || "").trim().toLowerCase();
+}
+
+function compactStudentId(studentId) {
+  return normalizeStudentId(studentId).replace(/[^a-z0-9]/g, "");
+}
+
+function studentIdVariants(studentId) {
+  const normalized = normalizeStudentId(studentId);
+  const compact = compactStudentId(normalized);
+  return [...new Set([normalized, compact].filter(Boolean))];
+}
+
+async function fetchTimelineEvents(examId, studentIds) {
+  return ProctoringEvent.aggregate([
+    { $match: { examId, studentId: { $in: studentIds } } },
+    { $sort: { createdAt: 1 } },
+    {
+      $project: {
+        eventType: 1,
+        suspicionScore: 1,
+        scoreDelta: 1,
+        totalSuspicionScore: 1,
+        ruleId: 1,
+        occurredAt: 1,
+        evidenceReference: 1,
+        alertMessage: 1,
+        severity: 1,
+        confidence: 1,
+        evidenceId: 1,
+        evidenceIds: 1,
+        priority: 1,
+        retentionClass: 1,
+        suspiciousEventIds: 1,
+        promotedAt: 1,
+        promotedBy: 1,
+        promotionReason: 1,
+        retentionExpiresAt: 1,
+        sequenceNumber: 1,
+        sessionId: 1,
+        captureTiming: 1,
+        metadata: 1,
+        previewUrl: 1,
+        createdAt: 1,
+        previewBase64: {
+          $let: {
+            vars: { preview: { $ifNull: ["$previewBase64", ""] } },
+            in: {
+              $cond: [
+                { $gt: [{ $strLenBytes: "$$preview" }, MAX_INLINE_TIMELINE_PREVIEW_LENGTH] },
+                "",
+                "$$preview",
+              ],
+            },
+          },
+        },
+      },
+    },
+  ]);
+}
+
 async function findTeacherExam(teacherId, examId) {
   const exam = await Exam.findOne({ _id: examId, createdBy: teacherId }).lean();
   if (!exam) {
@@ -467,11 +573,11 @@ async function buildIntegrityReport(exam) {
   for (const session of sessions) assignedStudents.add(session.studentId);
   for (const event of events) assignedStudents.add(event.studentId);
 
-  const students = [...assignedStudents].filter(Boolean).map((studentId) => {
+  const students = await Promise.all([...assignedStudents].filter(Boolean).map(async (studentId) => {
     const session = sessions.find((item) => item.studentId === studentId);
     const studentEvents = eventMap.get(studentId) || [];
     const breakdown = buildBreakdown(session, studentEvents);
-    const finalRiskScore = calculateFinalRiskScore(session, studentEvents, breakdown);
+    const finalRiskScore = authoritativeSuspicionScore(session);
     return {
       studentId,
       studentName: session?.studentName || studentEvents[0]?.studentName || studentId,
@@ -480,9 +586,10 @@ async function buildIntegrityReport(exam) {
       finalRiskScore,
       riskLevel: riskLevel(finalRiskScore),
       recommendation: recommendation(finalRiskScore, breakdown),
-      latestAlert: session?.latestAlert || studentEvents.at(-1)?.alertMessage || "",
-      lastUpdatedAt: session?.updatedAt || studentEvents.at(-1)?.createdAt || null,
+      latestAlert: session?.latestAlert || studentEvents[studentEvents.length - 1]?.alertMessage || "",
+      lastUpdatedAt: session?.updatedAt || studentEvents[studentEvents.length - 1]?.createdAt || null,
       breakdown,
+      evidenceSamples: await buildEvidenceSamples(studentEvents),
       review: reviewMap.get(studentId) || {
         decision: "PENDING",
         notes: "",
@@ -490,7 +597,7 @@ async function buildIntegrityReport(exam) {
         reviewedAt: null,
       },
     };
-  });
+  }));
 
   students.sort((first, second) => second.finalRiskScore - first.finalRiskScore);
 
@@ -540,16 +647,50 @@ function buildBreakdown(session, events) {
   };
 }
 
-function calculateFinalRiskScore(session, events, breakdown) {
-  const eventMax = Math.max(0, ...events.map((event) => Number(event.suspicionScore || 0)));
-  const base = Math.max(Number(session?.suspicionScore || 0), eventMax);
-  const additions =
-    breakdown.highSeverityCount * 8 +
-    breakdown.appSwitchCount * 10 +
-    breakdown.faceMissingCount * 6 +
-    breakdown.offlineEventCount * 5 +
-    (breakdown.wasLocked ? 25 : 0);
-  return Math.max(0, Math.min(100, base + additions));
+async function buildEvidenceSamples(events) {
+  const candidateEvents = events
+    .filter((event) => event.previewBase64 || event.previewUrl)
+    .sort((first, second) => evidencePriority(second) - evidencePriority(first))
+    .slice(0, 4);
+
+  const samples = await Promise.all(candidateEvents.map(async (event) => {
+    let imageUrl = event.previewUrl || "";
+    let inlineImage = "";
+    const preview = event.previewBase64 || "";
+
+    if (preview.startsWith("data:image/") && preview.length <= MAX_INLINE_TIMELINE_PREVIEW_LENGTH) {
+      inlineImage = preview;
+    } else if (preview.startsWith("http")) {
+      imageUrl = preview;
+    } else if (preview) {
+      try {
+        imageUrl = await getSignedFrameUrl(preview);
+      } catch (error) {
+        imageUrl = "";
+      }
+    }
+
+    return {
+      id: event._id.toString(),
+      eventType: event.eventType,
+      captureKind: event.eventType === "screen_telemetry_uploaded" ? "screen" : "camera",
+      captureLabel: event.eventType === "screen_telemetry_uploaded" ? "Screen capture" : "Camera capture",
+      severity: event.severity || "low",
+      alertMessage: event.alertMessage || "",
+      suspicionScore: event.suspicionScore || event.totalSuspicionScore || 0,
+      capturedAt: event.captureTiming?.capturedAt || event.occurredAt || event.createdAt,
+      imageUrl,
+      inlineImage,
+    };
+  }));
+
+  return samples.filter((sample) => sample.imageUrl || sample.inlineImage);
+}
+
+function evidencePriority(event) {
+  const severityWeight = { high: 100, medium: 60, low: 20 }[event.severity] || 0;
+  const priorityWeight = { critical: 80, suspicious: 50, routine: 0 }[event.priority] || 0;
+  return severityWeight + priorityWeight + Number(event.suspicionScore || event.totalSuspicionScore || 0);
 }
 
 function riskLevel(score) {
@@ -565,11 +706,22 @@ function recommendation(score, breakdown) {
 }
 
 function buildSummary(students) {
+  const suspiciousAlertsTotal = students.reduce(
+    (total, student) => total + Number(student.breakdown?.suspiciousAlertCount || 0),
+    0
+  );
+  const averageSuspicionScore = students.length
+    ? Math.round(students.reduce((total, student) => total + Number(student.finalRiskScore || 0), 0) / students.length)
+    : 0;
+
   return {
     totalStudents: students.length,
     safeStudents: students.filter((student) => student.riskLevel === "SAFE").length,
     warningStudents: students.filter((student) => student.riskLevel === "WARNING").length,
     suspiciousStudents: students.filter((student) => student.riskLevel === "SUSPICIOUS").length,
+    highRiskCount: students.filter((student) => student.riskLevel === "SUSPICIOUS").length,
+    suspiciousAlertsTotal,
+    averageSuspicionScore,
     highestRiskMoments: students
       .filter((student) => student.latestAlert)
       .slice(0, 5)

@@ -5,10 +5,14 @@ import { useToast } from "../hooks/useToast";
 import { Button } from "../components/Button";
 import { Input } from "../components/Input";
 import { Card } from "../components/Card";
-import { ShieldCheck, Settings, Server, Eye, EyeOff, UserPlus, LogIn, Lock, Activity } from "lucide-react";
-import { invoke, isTauriAvailable } from "../utils/tauri";
+import { Settings, Server, Eye, EyeOff, UserPlus, LogIn, Lock, Activity } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { pageVariants } from "../motion/variants";
+import type { UserRole } from "../types";
+import { STUDENT_HOME_ROUTE, isTeacherDashboardRole } from "../routes/studentRoutes";
+import { NetworkProbeService } from "../services/NetworkProbeService";
+import { redirectToTeacherWebDashboard } from "../config/webDashboard";
+import cheatLockLogo from "../assets/cheatlock-logo.png";
 
 type AuthTab = "login" | "signup";
 
@@ -18,6 +22,7 @@ export function LoginPage() {
   const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState<AuthTab>("login");
+  const [selectedRole, setSelectedRole] = useState<UserRole>("STUDENT");
 
   // Login form state
   const [identifier, setIdentifier] = useState("");
@@ -49,9 +54,14 @@ export function LoginPage() {
     setIsLoading(true);
 
     try {
-      await login(identifier, password, rememberMe);
+      const signedInUser = await login(identifier, password, rememberMe, selectedRole);
+      if (isTeacherDashboardRole(signedInUser.role)) {
+        showToast("Opening teacher web dashboard.", "success");
+        await redirectToTeacherWebDashboard();
+        return;
+      }
       showToast("Session initialized successfully.", "success");
-      navigate("/dashboard");
+      navigate(STUDENT_HOME_ROUTE);
     } catch (err: any) {
       const msg = err.message || "Invalid credentials.";
       setError(msg);
@@ -89,7 +99,7 @@ export function LoginPage() {
     try {
       await signup(signupName.trim(), signupIdentifier.trim(), signupPassword);
       showToast("Account created successfully! Welcome to CheatLock.", "success");
-      navigate("/dashboard");
+      navigate(STUDENT_HOME_ROUTE);
     } catch (err: any) {
       const msg = err.message || "Signup failed.";
       setError(msg);
@@ -102,14 +112,12 @@ export function LoginPage() {
   const handleSaveSettings = async () => {
     setIsLoading(true);
     try {
-      if (isTauriAvailable()) {
-        const ping = await invoke<number>("check_network_latency", { url: tempServerUrl });
-        updateServerUrl(tempServerUrl);
-        showToast(`Server online. Ping: ${ping}ms`, "success");
-      } else {
-        updateServerUrl(tempServerUrl);
-        showToast("Server URL updated successfully.", "success");
+      const probe = await NetworkProbeService.probeBackendHealth({ origin: tempServerUrl });
+      if (!probe.reachable || typeof probe.latencyMs !== "number") {
+        throw new Error(probe.message || probe.errorCode || "Specified host could not be verified.");
       }
+      updateServerUrl(tempServerUrl);
+      showToast(`Server online. Ping: ${probe.latencyMs}ms`, "success");
       setShowSettings(false);
     } catch (err) {
       showToast("Specified host could not be verified.", "error");
@@ -120,6 +128,9 @@ export function LoginPage() {
 
   const switchTab = (tab: AuthTab) => {
     setActiveTab(tab);
+    if (tab === "signup") {
+      setSelectedRole("STUDENT");
+    }
     setError(null);
   };
 
@@ -131,11 +142,6 @@ export function LoginPage() {
       exit="exit"
       className="h-screen w-screen flex flex-col items-center justify-center bg-surface-base px-4 select-none relative overflow-hidden"
     >
-      {/* ---------- 3D Grid Background & Blobs ---------- */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none z-0">
-        <div className="absolute top-[10%] left-[5%] w-72 h-72 rounded-full bg-accent/10 blur-[80px] animate-pulse" />
-        <div className="absolute bottom-[10%] right-[5%] w-96 h-96 rounded-full bg-blue-500/10 blur-[100px] animate-pulse" />
-      </div>
 
       {/* ---------- Floating Background Particles ---------- */}
       <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
@@ -180,9 +186,9 @@ export function LoginPage() {
               boxShadow: ["0 0 0px rgba(124, 58, 237, 0)", "0 0 20px rgba(124, 58, 237, 0.3)", "0 0 0px rgba(124, 58, 237, 0)"] 
             }}
             transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-            className="h-14 w-14 rounded-2xl bg-accent/15 flex items-center justify-center text-accent border border-accent/30 shadow-lg"
+            className="h-14 w-14 overflow-hidden rounded-2xl bg-surface-base flex items-center justify-center border border-accent/30 shadow-lg"
           >
-            <ShieldCheck size={32} strokeWidth={1.5} className="text-accent" />
+            <img src={cheatLockLogo} alt="CheatLock logo" className="h-full w-full object-cover" />
           </motion.div>
 
           <div>
@@ -190,7 +196,7 @@ export function LoginPage() {
               CheatLock
             </h1>
             <p className="text-xs font-medium tracking-wider text-accent/80 mt-1 font-mono uppercase">
-              STUDENT LOCKDOWN CLIENT
+              DESKTOP EXAM CLIENT
             </p>
           </div>
         </motion.div>
@@ -276,6 +282,35 @@ export function LoginPage() {
                   </button>
                 </div>
 
+                {activeTab === "login" && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRole("STUDENT")}
+                      className={`rounded-md border px-3 py-2 text-left transition-colors ${
+                        selectedRole === "STUDENT"
+                          ? "border-accent/40 bg-accent/10 text-zinc-50"
+                          : "border-border bg-surface-base text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      <span className="block text-xs font-semibold uppercase tracking-[0.14em]">Student</span>
+                      <span className="mt-1 block text-[11px] text-zinc-500">Exam home and alerts</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRole("TEACHER")}
+                      className={`rounded-md border px-3 py-2 text-left transition-colors ${
+                        selectedRole === "TEACHER"
+                          ? "border-cyan-400/40 bg-cyan-400/10 text-zinc-50"
+                          : "border-border bg-surface-base text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      <span className="block text-xs font-semibold uppercase tracking-[0.14em]">Teacher</span>
+                      <span className="mt-1 block text-[11px] text-zinc-500">Create and start exams</span>
+                    </button>
+                  </div>
+                )}
+
                 {/* Error Display */}
                 {error && (
                   <div className="px-3.5 py-2 bg-danger/10 border border-danger/20 text-danger rounded-md text-xs font-sans">
@@ -296,10 +331,10 @@ export function LoginPage() {
                       className="flex flex-col gap-4"
                     >
                       <Input
-                        label="Student Roll ID or Email"
+                        label={selectedRole === "TEACHER" ? "Teacher ID or Email" : "Student Roll ID or Email"}
                         value={identifier}
                         onChange={(e) => setIdentifier(e.target.value)}
-                        placeholder="e.g. student-001"
+                        placeholder={selectedRole === "TEACHER" ? "e.g. teacher@school.edu" : "e.g. student-001"}
                         disabled={isLoading}
                       />
 
@@ -345,7 +380,7 @@ export function LoginPage() {
                       >
                         <span className={`flex items-center justify-center gap-1.5 transition-opacity duration-200 ${isLoading ? "opacity-0" : "opacity-100"}`}>
                           <Lock size={14} />
-                          Initialize Secure Session
+                          Sign in as {selectedRole === "TEACHER" ? "Teacher" : "Student"}
                         </span>
                         {isLoading && (
                           <span className="absolute inset-0 flex items-center justify-center bg-accent rounded-lg">

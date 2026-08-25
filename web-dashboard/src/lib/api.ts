@@ -16,6 +16,12 @@ import type {
   ProctoringTimelineResponse,
   SessionsResponse,
   SubmissionsResponse,
+  QuestionBankChapter,
+  QuestionBankClass,
+  QuestionBankQuestion,
+  QuestionBankSearchFilters,
+  QuestionBankSearchResult,
+  QuestionBankSubject,
 } from "../types";
 import type { TeacherClass } from "../types";
 
@@ -39,6 +45,9 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       clearAuth();
+      if (window.location.pathname !== "/login") {
+        window.location.assign("/login");
+      }
     }
     return Promise.reject(error);
   }
@@ -51,16 +60,6 @@ export async function loginTeacher(identifier: string, password: string) {
     role: "TEACHER",
   });
   return data;
-}
-
-export async function signupTeacher(name: string, identifier: string, password: string) {
-  await api.post("/auth/signup", {
-    name: name.trim(),
-    identifier: identifier.trim(),
-    password,
-    role: "TEACHER",
-  });
-  return loginTeacher(identifier, password);
 }
 
 export async function fetchTeacherExams() {
@@ -288,4 +287,160 @@ export async function downloadIntegrityReportPdf(examId: string) {
     responseType: "blob",
   });
   return data;
+}
+
+export async function fetchAdminQuestionBankClasses() {
+  const { data } = await api.get<{ classes: QuestionBankClass[] }>("/question-bank/admin/classes");
+  return data.classes;
+}
+
+export async function fetchQuestionBankClasses() {
+  const { data } = await api.get<{ classes: QuestionBankClass[] }>("/question-bank/classes");
+  return data.classes;
+}
+
+export async function createQuestionBankClass(payload: {
+  name: string;
+  slug?: string;
+  displayOrder?: number;
+  isActive?: boolean;
+}) {
+  const { data } = await api.post<{ class: QuestionBankClass }>("/question-bank/admin/classes", payload);
+  return data.class;
+}
+
+export async function updateQuestionBankClass(classId: string, payload: {
+  name: string;
+  slug?: string;
+  displayOrder?: number;
+  isActive?: boolean;
+}) {
+  const { data } = await api.put<{ class: QuestionBankClass }>(`/question-bank/admin/classes/${classId}`, payload);
+  return data.class;
+}
+
+export async function setQuestionBankClassStatus(classId: string, isActive: boolean) {
+  const { data } = await api.patch<{ class: QuestionBankClass }>(`/question-bank/admin/classes/${classId}/status`, { isActive });
+  return data.class;
+}
+
+export async function fetchAdminQuestionBankSubjects(classId: string) {
+  const { data } = await api.get<{ subjects: QuestionBankSubject[] }>(`/question-bank/admin/classes/${classId}/subjects`);
+  return data.subjects;
+}
+
+export async function fetchQuestionBankSubjects(classId: string) {
+  const { data } = await api.get<{ subjects: QuestionBankSubject[] }>(`/question-bank/classes/${classId}/subjects`);
+  return data.subjects;
+}
+
+export async function createQuestionBankSubject(payload: {
+  classId: string;
+  name: string;
+  slug?: string;
+  code?: string;
+  displayOrder?: number;
+  isActive?: boolean;
+}) {
+  const { data } = await api.post<{ subject: QuestionBankSubject }>("/question-bank/admin/subjects", payload);
+  return data.subject;
+}
+
+export async function updateQuestionBankSubject(subjectId: string, payload: {
+  classId: string;
+  name: string;
+  slug?: string;
+  code?: string;
+  displayOrder?: number;
+  isActive?: boolean;
+}) {
+  const { data } = await api.put<{ subject: QuestionBankSubject }>(`/question-bank/admin/subjects/${subjectId}`, payload);
+  return data.subject;
+}
+
+export async function setQuestionBankSubjectStatus(subjectId: string, isActive: boolean) {
+  const { data } = await api.patch<{ subject: QuestionBankSubject }>(`/question-bank/admin/subjects/${subjectId}/status`, { isActive });
+  return data.subject;
+}
+
+export async function fetchAdminQuestionBankChapters(subjectId: string) {
+  const { data } = await api.get<{ chapters: QuestionBankChapter[] }>(`/question-bank/admin/subjects/${subjectId}/chapters`);
+  return data.chapters;
+}
+
+export async function fetchQuestionBankChapters(subjectId: string) {
+  const { data } = await api.get<{ chapters: QuestionBankChapter[] }>(`/question-bank/subjects/${subjectId}/chapters`);
+  return data.chapters;
+}
+
+export async function createQuestionBankChapter(payload: {
+  subjectId: string;
+  name: string;
+  slug?: string;
+  chapterNumber?: number | null;
+  displayOrder?: number;
+  isActive?: boolean;
+}) {
+  const { data } = await api.post<{ chapter: QuestionBankChapter }>("/question-bank/admin/chapters", payload);
+  return data.chapter;
+}
+
+export async function updateQuestionBankChapter(chapterId: string, payload: {
+  subjectId: string;
+  name: string;
+  slug?: string;
+  chapterNumber?: number | null;
+  displayOrder?: number;
+  isActive?: boolean;
+}) {
+  const { data } = await api.put<{ chapter: QuestionBankChapter }>(`/question-bank/admin/chapters/${chapterId}`, payload);
+  return data.chapter;
+}
+
+export async function setQuestionBankChapterStatus(chapterId: string, isActive: boolean) {
+  const { data } = await api.patch<{ chapter: QuestionBankChapter }>(`/question-bank/admin/chapters/${chapterId}/status`, { isActive });
+  return data.chapter;
+}
+
+export async function fetchQuestionBankQuestions(params: Record<string, string | number | undefined>) {
+  const { data } = await api.get<{ questions: QuestionBankQuestion[]; page: number; limit: number; total: number }>("/question-bank/questions", { params });
+  return data;
+}
+
+export async function searchTeacherQuestionBank(params: QuestionBankSearchFilters) {
+  const { data } = await api.get<QuestionBankSearchResult>("/question-bank/questions", { params: { ...params, status: "active" } });
+  return data;
+}
+
+export async function fetchQuestionBankQuestion(questionId: string) {
+  const { data } = await api.get<{ question: QuestionBankQuestion }>(`/question-bank/questions/${questionId}`);
+  return data.question;
+}
+
+export async function createQuestionBankSnapshots(questionIds: string[]) {
+  const { data } = await api.post<{ added: number; questions: Exam["questions"] }>("/question-bank/teacher/questions/snapshots", { questionIds });
+  return data;
+}
+
+export async function importQuestionBankQuestionsIntoExam(examId: string, questionIds: string[]) {
+  const { data } = await api.post<{ added: number; exam: Pick<Exam, "id" | "title" | "questions"> }>(
+    `/question-bank/teacher/exams/${examId}/questions`,
+    { questionIds }
+  );
+  return data;
+}
+
+export async function createQuestionBankQuestion(payload: Partial<QuestionBankQuestion>) {
+  const { data } = await api.post<{ question: QuestionBankQuestion }>("/question-bank/questions", payload);
+  return data.question;
+}
+
+export async function updateQuestionBankQuestion(questionId: string, payload: Partial<QuestionBankQuestion>) {
+  const { data } = await api.put<{ question: QuestionBankQuestion }>(`/question-bank/questions/${questionId}`, payload);
+  return data.question;
+}
+
+export async function setQuestionBankQuestionStatus(questionId: string, status: "draft" | "active" | "inactive") {
+  const { data } = await api.patch<{ question: QuestionBankQuestion }>(`/question-bank/questions/${questionId}/status`, { status });
+  return data.question;
 }

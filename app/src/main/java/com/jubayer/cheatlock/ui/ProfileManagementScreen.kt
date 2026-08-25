@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jubayer.cheatlock.model.UserAccount
+import com.jubayer.cheatlock.model.UserRole
 import com.jubayer.cheatlock.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -32,6 +33,8 @@ fun ProfileManagementScreen(
     account: UserAccount,
     onUpdateProfile: suspend (String, String) -> Unit,
     onHasFaceProfile: suspend () -> Boolean,
+    onDeleteAccount: suspend (String) -> Unit = {},
+    onOpenAccountDeletionPage: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
@@ -41,6 +44,9 @@ fun ProfileManagementScreen(
     var hasFaceProfile by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
+    var deletionPassword by remember { mutableStateOf("") }
+    var isDeleting by remember { mutableStateOf(false) }
 
     LaunchedEffect(account) {
         runCatching { onHasFaceProfile() }
@@ -142,6 +148,34 @@ fun ProfileManagementScreen(
             }
         }
 
+
+        if (account.role == UserRole.STUDENT) PremiumCard {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SectionHeader(
+                    title = "Account",
+                    subtitle = "Manage your CheatLock account"
+                )
+                Text(
+                    "Deleting your account permanently removes your profile, face enrollment, exam sessions, submissions, and proctoring evidence associated with this student account.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CheatLockTextSecondaryDark
+                )
+                OutlinedButton(
+                    onClick = { showDeleteConfirmation = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    border = BorderStroke(1.dp, CheatLockDanger.copy(alpha = 0.6f))
+                ) {
+                    Icon(Icons.Default.DeleteForever, null, tint = CheatLockDanger)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Delete Account", color = CheatLockDanger, fontWeight = FontWeight.Bold)
+                }
+                TextButton(
+                    onClick = onOpenAccountDeletionPage,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Account deletion help or web request") }
+            }
+        }
+
         // 3. Security & Biometrics Card
         PremiumCard {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -195,6 +229,46 @@ fun ProfileManagementScreen(
                 modifier = Modifier.padding(horizontal = 4.dp)
             )
         }
+    }
+
+    if (showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeleting) showDeleteConfirmation = false },
+            title = { Text("Permanently delete account?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("This cannot be undone. Enter your current password to confirm.")
+                    PremiumOutlinedTextField(
+                        value = deletionPassword,
+                        onValueChange = { deletionPassword = it },
+                        label = "Current password",
+                        leadingIcon = Icons.Default.Lock,
+                        isPassword = true
+                    )
+                    message?.let { Text(it, color = CheatLockDanger) }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = deletionPassword.isNotBlank() && !isDeleting,
+                    onClick = {
+                        isDeleting = true
+                        message = null
+                        scope.launch {
+                            runCatching { onDeleteAccount(deletionPassword) }
+                                .onFailure { message = it.message ?: "Account deletion failed. No local session changes were made." }
+                            isDeleting = false
+                        }
+                    }
+                ) { Text(if (isDeleting) "Deleting…" else "Delete permanently", color = CheatLockDanger) }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isDeleting,
+                    onClick = { showDeleteConfirmation = false; deletionPassword = "" }
+                ) { Text("Cancel") }
+            }
+        )
     }
 }
 

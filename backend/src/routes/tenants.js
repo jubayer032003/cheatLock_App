@@ -1,11 +1,17 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import { requireAuth, requirePermission, requireRole } from "../middleware/auth.js";
+import { passwordResetRateLimiter } from "../middleware/rateLimiter.js";
 import { Tenant } from "../models/Tenant.js";
 import { User } from "../models/User.js";
 import { AuditLog } from "../models/AuditLog.js";
+import { generateResetToken, hashResetToken, resetTokenExpiryDate } from "./auth.js";
+import { logger } from "../services/logger.js";
 
 export const tenantsRouter = express.Router();
+
+const TENANT_ADMIN_ROLES = ["INSTITUTION_ADMIN", "DEPARTMENT_ADMIN"];
+const PROTECTED_ROLES = ["SUPER_ADMIN", ...TENANT_ADMIN_ROLES];
 
 // Helper to log audit actions
 async function writeAuditLog(req, action, details) {
@@ -20,7 +26,7 @@ async function writeAuditLog(req, action, details) {
       userAgent: req.headers["user-agent"] || "",
     });
   } catch (err) {
-    console.error("Failed to write audit log:", err);
+    logger.error("Failed to write audit log.", { action, errorName: err.name || "AuditLogError" });
   }
 }
 
@@ -170,6 +176,7 @@ tenantsRouter.post(
     try {
       const tenantId = req.user.tenantId || (await Tenant.findOne({ slug: "default" }))._id;
       const { name, identifier, password, role, department, program, batch } = req.body;
+      assertRoleCanBeManaged(req, role);
 
       const existing = await User.findOne({ identifier }).lean();
       if (existing) {
@@ -178,7 +185,8 @@ tenantsRouter.post(
         throw error;
       }
 
-      const passwordHash = await bcrypt.hash(password || "CheatLock123!", 10);
+      const generatedPassword = password ? "" : generateTemporaryPassword();
+      const passwordHash = await bcrypt.hash(password || generatedPassword, 10);
       const user = await User.create({
         name,
         identifier,
@@ -188,6 +196,9 @@ tenantsRouter.post(
         department,
         program,
         batch,
+        mustChangePassword: !password,
+        passwordChangedAt: new Date(),
+        tokenVersion: 0,
       });
 
       await writeAuditLog(req, "CREATE_USER", { identifier, role });
@@ -198,6 +209,7 @@ tenantsRouter.post(
           identifier: user.identifier,
           role: user.role,
         },
+        temporaryPassword: generatedPassword || undefined,
       });
     } catch (err) {
       next(err);
@@ -221,13 +233,14 @@ tenantsRouter.post(
         throw error;
       }
 
-      const defaultHash = await bcrypt.hash("CheatLock123!", 10);
       const results = [];
       const skipped = [];
+      const temporaryCredentials = [];
 
       for (const item of users) {
         const identifier = String(item.identifier || "").trim().toLowerCase();
         if (!identifier) continue;
+        assertRoleCanBeManaged(req, item.role || "STUDENT");
 
         const existing = await User.findOne({ identifier }).lean();
         if (existing) {
@@ -235,17 +248,23 @@ tenantsRouter.post(
           continue;
         }
 
+        const temporaryPassword = generateTemporaryPassword();
+        const passwordHash = await bcrypt.hash(temporaryPassword, 10);
         const created = await User.create({
           name: String(item.name || identifier).trim(),
           identifier,
-          passwordHash: defaultHash,
+          passwordHash,
           role: String(item.role || "STUDENT").toUpperCase(),
           tenantId,
           department: String(item.department || "").trim(),
           program: String(item.program || "").trim(),
           batch: String(item.batch || "").trim(),
+          mustChangePassword: true,
+          passwordChangedAt: new Date(),
+          tokenVersion: 0,
         });
         results.push(created.identifier);
+        temporaryCredentials.push({ identifier: created.identifier, temporaryPassword });
       }
 
       await writeAuditLog(req, "BULK_IMPORT_USERS", { count: results.length, skipped: skipped.length });
@@ -253,6 +272,7 @@ tenantsRouter.post(
         importedCount: results.length,
         skippedCount: skipped.length,
         skipped,
+        temporaryCredentials,
       });
     } catch (err) {
       next(err);
@@ -268,8 +288,12 @@ tenantsRouter.put(
   async (req, res, next) => {
     try {
       const { status } = req.body;
-      const user = await User.findByIdAndUpdate(
-        req.params.userId,
+      const targetUser = await findTenantUserById(req);
+      assertRoleCanBeManaged(req, targetUser.role);
+      await assertTenantAdminWillRemain(req, targetUser, status);
+
+      const user = await User.findOneAndUpdate(
+        tenantUserQuery(req),
         { $set: { status } },
         { new: true }
       ).lean();
@@ -291,14 +315,27 @@ tenantsRouter.put(
 // 10. User Management: Reset password
 tenantsRouter.put(
   "/my-tenant/users/:userId/reset-password",
+  passwordResetRateLimiter,
   requireAuth,
   requirePermission("manage_users"),
   async (req, res, next) => {
     try {
-      const passwordHash = await bcrypt.hash("CheatLock123!", 10);
-      const user = await User.findByIdAndUpdate(
-        req.params.userId,
-        { $set: { passwordHash } },
+      const targetUser = await findTenantUserById(req);
+      assertRoleCanBeManaged(req, targetUser.role);
+      const resetToken = generateResetToken();
+      const resetExpiresAt = resetTokenExpiryDate();
+
+      const user = await User.findOneAndUpdate(
+        tenantUserQuery(req),
+        {
+          $set: {
+            passwordResetTokenHash: hashResetToken(resetToken),
+            passwordResetExpiresAt: resetExpiresAt,
+            passwordResetRequestedAt: new Date(),
+            mustChangePassword: true,
+          },
+          $inc: { tokenVersion: 1 },
+        },
         { new: true }
       ).lean();
 
@@ -309,7 +346,11 @@ tenantsRouter.put(
       }
 
       await writeAuditLog(req, "RESET_USER_PASSWORD", { userId: user.identifier });
-      res.json({ success: true });
+      res.json({
+        success: true,
+        resetToken,
+        expiresAt: resetExpiresAt.toISOString(),
+      });
     } catch (err) {
       next(err);
     }
@@ -323,7 +364,11 @@ tenantsRouter.delete(
   requirePermission("manage_users"),
   async (req, res, next) => {
     try {
-      const user = await User.findByIdAndDelete(req.params.userId).lean();
+      const targetUser = await findTenantUserById(req);
+      assertRoleCanBeManaged(req, targetUser.role);
+      await assertTenantAdminWillRemain(req, targetUser, "DELETED");
+
+      const user = await User.findOneAndDelete(tenantUserQuery(req)).lean();
       if (!user) {
         const error = new Error("User not found.");
         error.status = 404;
@@ -337,3 +382,69 @@ tenantsRouter.delete(
     }
   }
 );
+
+function tenantUserQuery(req) {
+  const tenantId = requireAuthenticatedTenantId(req);
+  return {
+    _id: req.params.userId,
+    tenantId,
+  };
+}
+
+function generateTemporaryPassword() {
+  return `CL-${generateResetToken().slice(0, 18)}-${generateResetToken().slice(0, 6)}`;
+}
+
+function requireAuthenticatedTenantId(req) {
+  const tenantId = req.user?.tenantId;
+  if (!tenantId) {
+    const error = new Error("Tenant context is required.");
+    error.status = 403;
+    throw error;
+  }
+  return tenantId;
+}
+
+async function findTenantUserById(req) {
+  const user = await User.findOne(tenantUserQuery(req)).lean();
+  if (!user) {
+    const error = new Error("User not found.");
+    error.status = 404;
+    throw error;
+  }
+  return user;
+}
+
+function assertRoleCanBeManaged(req, role) {
+  const normalizedRole = String(role || "").trim().toUpperCase();
+  if (normalizedRole === "SUPER_ADMIN") {
+    const error = new Error("This user role cannot be managed from tenant user management.");
+    error.status = 403;
+    throw error;
+  }
+
+  if (PROTECTED_ROLES.includes(normalizedRole) && req.user?.role !== "SUPER_ADMIN") {
+    const error = new Error("This user role cannot be managed by this administrator.");
+    error.status = 403;
+    throw error;
+  }
+}
+
+async function assertTenantAdminWillRemain(req, targetUser, nextStatus) {
+  const normalizedStatus = String(nextStatus || "").trim().toUpperCase();
+  const disablesTarget = normalizedStatus === "DELETED" || (normalizedStatus && normalizedStatus !== "ACTIVE");
+  if (!disablesTarget || !TENANT_ADMIN_ROLES.includes(targetUser.role)) return;
+
+  const activeAdminCount = await User.countDocuments({
+    tenantId: requireAuthenticatedTenantId(req),
+    _id: { $ne: targetUser._id },
+    role: { $in: TENANT_ADMIN_ROLES },
+    status: "ACTIVE",
+  });
+
+  if (activeAdminCount === 0) {
+    const error = new Error("At least one active tenant administrator is required.");
+    error.status = 403;
+    throw error;
+  }
+}

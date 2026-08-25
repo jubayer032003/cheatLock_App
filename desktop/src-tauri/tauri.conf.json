@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost data:; connect-src 'self' ws://localhost:3000 http://localhost:3000 ws://* http://* https://* wss://*; media-src 'self' blob: data:;"
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://asset.localhost data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' https://cheatlock-backend.onrender.com wss://cheatlock-backend.onrender.com ipc: http://ipc.localhost;"
     }
   },
   "bundle": {

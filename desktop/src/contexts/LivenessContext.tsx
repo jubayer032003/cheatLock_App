@@ -12,6 +12,7 @@ import { Card } from "../components/Card";
 import { RefreshCw, CheckCircle2, ShieldAlert } from "lucide-react";
 import { isTauriAvailable } from "../utils/tauri";
 import { Button } from "../components/Button";
+import { ENABLE_DEV_LIVENESS_BYPASS } from "../config/devFeatures";
 
 interface LivenessContextType {
   challengeState: ChallengeState | null;
@@ -276,13 +277,13 @@ export function LivenessProvider({ children }: { children: React.ReactNode }) {
               </div>
             )}
 
-            {!isTauriAvailable() && challengeState.status === "running" && (
+            {ENABLE_DEV_LIVENESS_BYPASS && !isTauriAvailable() && challengeState.status === "running" && (
               <div className="border-t border-cyber-border/40 pt-3 flex justify-end">
                 <Button 
                   className="font-mono text-[9px] py-1 px-3 bg-violet-950/20 border border-violet-500/20 text-violet-400 hover:bg-violet-900/20"
                   onClick={handleChallengeSuccess}
                 >
-                  Bypass Challenge (Dev Mode)
+                  Development Simulation: Complete Liveness
                 </Button>
               </div>
             )}

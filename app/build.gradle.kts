@@ -12,14 +12,31 @@ val localProperties = Properties().apply {
     }
 }
 
-// Default: deployed Render backend. Override in local.properties for local dev:
+// Debug-only override. Release builds always use the production HTTPS endpoint.
 // cheatlock.apiBaseUrl=http://<YOUR_PC_IP>:3000/
-val cheatLockApiBaseUrl =
+val cheatLockDebugApiBaseUrl =
     (localProperties.getProperty("cheatlock.apiBaseUrl")
         ?: providers.gradleProperty("cheatlock.apiBaseUrl").orNull
         ?: "https://cheatlock-backend.onrender.com/")
         .trim()
         .let { if (it.endsWith("/")) it else "$it/" }
+
+fun configuredPublicUrl(name: String): String =
+    (localProperties.getProperty(name) ?: providers.gradleProperty(name).orNull ?: "")
+        .trim()
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+
+val uploadStoreFile = providers.environmentVariable("CHEATLOCK_UPLOAD_STORE_FILE").orNull
+val uploadStorePassword = providers.environmentVariable("CHEATLOCK_UPLOAD_STORE_PASSWORD").orNull
+val uploadKeyAlias = providers.environmentVariable("CHEATLOCK_UPLOAD_KEY_ALIAS").orNull
+val uploadKeyPassword = providers.environmentVariable("CHEATLOCK_UPLOAD_KEY_PASSWORD").orNull
+val hasUploadSigningCredentials = listOf(
+    uploadStoreFile,
+    uploadStorePassword,
+    uploadKeyAlias,
+    uploadKeyPassword
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.jubayer.cheatlock"
@@ -33,12 +50,34 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "CHEATLOCK_API_BASE_URL", "\"$cheatLockApiBaseUrl\"")
+        buildConfigField("String", "CHEATLOCK_API_BASE_URL", "\"https://cheatlock-backend.onrender.com/\"")
+        buildConfigField("Boolean", "ENABLE_RUNTIME_TRACING", "false")
+        buildConfigField("String", "PRIVACY_POLICY_URL", "\"${configuredPublicUrl("cheatlock.privacyPolicyUrl")}\"")
+        buildConfigField("String", "TERMS_URL", "\"${configuredPublicUrl("cheatlock.termsUrl")}\"")
+        buildConfigField("String", "ACCOUNT_DELETION_URL", "\"${configuredPublicUrl("cheatlock.accountDeletionUrl")}\"")
+    }
+
+    signingConfigs {
+        if (hasUploadSigningCredentials) {
+            create("upload") {
+                storeFile = file(uploadStoreFile!!)
+                storePassword = uploadStorePassword
+                keyAlias = uploadKeyAlias
+                keyPassword = uploadKeyPassword
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "CHEATLOCK_API_BASE_URL", "\"$cheatLockDebugApiBaseUrl\"")
+            buildConfigField("Boolean", "ENABLE_RUNTIME_TRACING", "true")
+        }
         release {
             isMinifyEnabled = false
+            if (hasUploadSigningCredentials) {
+                signingConfig = signingConfigs.getByName("upload")
+            }
 
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -74,15 +113,16 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.0")
     implementation(libs.retrofit)
     implementation(libs.retrofit.gson)
-    implementation("androidx.camera:camera-camera2:1.3.4")
-    implementation("androidx.camera:camera-lifecycle:1.3.4")
-    implementation("androidx.camera:camera-view:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.6.1")
+    implementation("androidx.camera:camera-lifecycle:1.6.1")
+    implementation("androidx.camera:camera-view:1.6.1")
 
-    implementation("com.google.mlkit:face-detection:16.1.6")
+    implementation("com.google.mlkit:face-detection:16.1.7")
     implementation("com.google.mlkit:image-labeling:17.0.9")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
-    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
-    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+    implementation("com.google.ai.edge.litert:litert:1.4.0")
+    implementation("com.google.ai.edge.litert:litert-api:1.4.0")
     implementation(libs.androidx.biometric)
     implementation(libs.zxing.core)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

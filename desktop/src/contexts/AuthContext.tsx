@@ -1,10 +1,11 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { User, Exam, ExamSession } from "../types";
-import { getServerUrl, setServerUrl } from "../api/client";
+import { User, Exam, ExamSession, UserRole } from "../types";
+import { getServerUrl, setApiAuthToken, setServerUrl } from "../api/client";
 import { TokenManager } from "../services/TokenManager";
 import { AuthenticationService } from "../services/AuthenticationService";
 import { SessionService } from "../services/SessionService";
 import { SocketService } from "../socket/service";
+import { SecureStorageService } from "../services/SecureStorageService";
 
 interface AuthContextType {
   user: User | null;
@@ -18,16 +19,13 @@ interface AuthContextType {
   setActiveExam: (exam: Exam | null) => void;
   setActiveSession: (session: ExamSession | null) => void;
   setHasRestoredSession: (val: boolean) => void;
-  login: (identifier: string, password: string, rememberMe: boolean) => Promise<User>;
+  login: (identifier: string, password: string, rememberMe: boolean, role: UserRole) => Promise<User>;
   signup: (name: string, identifier: string, password: string) => Promise<User>;
-  logout: () => void;
+  logout: () => Promise<void>;
   updateServerUrl: (url: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-// Purge temporary tokens on fresh application startup if rememberMe is false
-TokenManager.initializeOnStart();
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -40,11 +38,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     async function initSession() {
-      const savedToken = TokenManager.getToken();
-      const savedUser = TokenManager.getUser();
+      await TokenManager.initializeOnStart();
+      const savedToken = await TokenManager.getToken();
+      const savedUser = await TokenManager.getUser();
 
       if (savedToken && savedUser) {
         try {
+          setApiAuthToken(savedToken);
           setToken(savedToken);
           setUser(savedUser);
 
@@ -56,19 +56,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Validate token with server to check if it's still alive
           const validatedUser = await AuthenticationService.getCurrentUser();
           setUser(validatedUser);
-          TokenManager.saveUser(validatedUser);
+          await TokenManager.saveUser(validatedUser);
 
-          // Check if there is an active session in progress (crash recovery check)
-          const session = await SessionService.getActiveSession();
-          if (session && session.status === "IN_PROGRESS") {
-            const exam = await SessionService.getAssignedExam();
-            setActiveExam(exam);
-            setActiveSession(session);
-            setHasRestoredSession(true);
+          if (validatedUser.role === "STUDENT") {
+            // Check if there is an active session in progress (crash recovery check)
+            const session = await SessionService.getActiveSession();
+            if (session && session.status === "IN_PROGRESS") {
+              const exam = await SessionService.getAssignedExam();
+              setActiveExam(exam);
+              setActiveSession(session);
+              setHasRestoredSession(true);
+            }
           }
         } catch (err) {
           console.warn("[Auth] Auto-login or session recovery failed:", err);
-          logout();
+          await logout();
         }
       }
       setLoading(false);
@@ -84,15 +86,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const login = async (identifier: string, password: string, rememberMe: boolean): Promise<User> => {
+  const login = async (identifier: string, password: string, rememberMe: boolean, role: UserRole): Promise<User> => {
     setLoading(true);
     try {
-      const data = await AuthenticationService.login(identifier, password);
+      const data = await AuthenticationService.login(identifier, password, role);
       
       setToken(data.token);
+      setApiAuthToken(data.token);
       setUser(data.user);
-      TokenManager.saveToken(data.token, rememberMe);
-      TokenManager.saveUser(data.user);
+      await TokenManager.saveToken(data.token, rememberMe);
+      await TokenManager.saveUser(data.user);
 
       // Connect Socket.IO in background
       SocketService.getInstance().connect(data.token).catch((err) => {
@@ -101,12 +104,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       // Check for active session recovery immediately after login
       try {
-        const session = await SessionService.getActiveSession();
-        if (session && session.status === "IN_PROGRESS") {
-          const exam = await SessionService.getAssignedExam();
-          setActiveExam(exam);
-          setActiveSession(session);
-          setHasRestoredSession(true);
+        if (data.user.role === "STUDENT") {
+          const session = await SessionService.getActiveSession();
+          if (session && session.status === "IN_PROGRESS") {
+            const exam = await SessionService.getAssignedExam();
+            setActiveExam(exam);
+            setActiveSession(session);
+            setHasRestoredSession(true);
+          }
         }
       } catch (err) {
         console.warn("[Auth] Session recovery check after login skipped:", err);
@@ -126,9 +131,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const data = await AuthenticationService.signup(name, identifier, password);
 
       setToken(data.token);
+      setApiAuthToken(data.token);
       setUser(data.user);
-      TokenManager.saveToken(data.token, true);
-      TokenManager.saveUser(data.user);
+      await TokenManager.saveToken(data.token, true);
+      await TokenManager.saveUser(data.user);
 
       // Connect Socket.IO in background
       SocketService.getInstance().connect(data.token).catch((err) => {
@@ -143,13 +149,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const currentUser = user;
     setUser(null);
     setToken(null);
+    setApiAuthToken(null);
     setActiveExam(null);
     setActiveSession(null);
     setHasRestoredSession(false);
-    TokenManager.clear();
+    await TokenManager.clear();
+    if (currentUser?.identifier) {
+      await SecureStorageService.delete(`cheatlock.face_descriptor.${currentUser.identifier.trim().toLowerCase()}`);
+      localStorage.removeItem(`cheatlock_face_descriptor_${currentUser.identifier}`);
+    }
     SocketService.getInstance().disconnect();
   };
 

@@ -1,13 +1,13 @@
 import { apiClient } from "../api/client";
-import { User } from "../types";
+import { User, UserRole } from "../types";
 
 export class AuthenticationService {
-  public static async login(identifier: string, password: string): Promise<{ token: string; user: User }> {
+  public static async login(identifier: string, password: string, role: UserRole): Promise<{ token: string; user: User }> {
     try {
       const { data } = await apiClient.post<{ token: string; user: User }>("/auth/login", {
         identifier,
         password,
-        role: "STUDENT",
+        role,
       });
       return data;
     } catch (error: any) {

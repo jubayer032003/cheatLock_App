@@ -2,9 +2,8 @@ import { Exam } from "../models/Exam.js";
 import { ExamSession } from "../models/ExamSession.js";
 import { ProctoringEvent } from "../models/ProctoringEvent.js";
 import { User } from "../models/User.js";
-import { Tenant } from "../models/Tenant.js";
 import { verifyToken } from "../middleware/auth.js";
-import { uploadFrame, getSignedFrameUrl } from "../services/s3.js";
+import { uploadFrame, getSignedFrameUrl, isS3Configured } from "../services/s3.js";
 
 const STUDENT_EVENTS = [
   "student_joined_exam",
@@ -83,6 +82,28 @@ export function configureProctoringSocket(io) {
         }
         const room = roomName(examId);
         io.to(room).emit("teacher_command", { studentId, examId, command, message });
+
+        if (command === "LOCK_EXAM") {
+          const session = await ExamSession.findOneAndUpdate(
+            { examId, studentId: studentId.trim().toLowerCase() },
+            {
+              $set: {
+                status: "LOCKED",
+                lockedAt: Date.now(),
+                lockReason: message || "Locked by teacher",
+                onlineStatus: "OFFLINE",
+              }
+            },
+            { new: true }
+          ).lean();
+          if (session) {
+            const exam = await Exam.findById(examId);
+            if (exam) {
+              await broadcastSessionState(io, "student_left_exam", exam, session);
+            }
+          }
+        }
+
         acknowledge?.({ ok: true });
       } catch (error) {
         acknowledge?.({ ok: false, message: error.message });
@@ -124,44 +145,6 @@ export async function handleStudentProctoringEvent(io, user, eventName, payload 
   const now = Date.now();
   const existingSession = await ExamSession.findOne({ examId: exam._id, studentId }).lean();
 
-  // Retrieve tenant weights from the database configuration
-  const studentUser = await User.findOne({ identifier: studentId }).lean();
-  const tenant = studentUser?.tenantId ? await Tenant.findById(studentUser.tenantId).lean() : null;
-  const thresholds = tenant?.settings?.aiThresholds || {
-    faceMissingWeight: 25,
-    multipleFacesWeight: 30,
-    phoneDetectedWeight: 20,
-    speechDetectedWeight: 10,
-    repeatedSwitchWeight: 15,
-    fullscreenExitWeight: 15,
-    clipboardUsageWeight: 10,
-    multiMonitorWeight: 25,
-    livenessFailureWeight: 40,
-    decayRate: 0.4
-  };
-
-  // 1. Calculate score decay based on elapsed idle time
-  let computedScore = existingSession?.suspicionScore || 0;
-  const lastSeenAt = existingSession?.lastSeenAt || existingSession?.updatedAt || now;
-  const elapsedSeconds = Math.max(0, (now - lastSeenAt) / 1000);
-  if (elapsedSeconds > 5) {
-    const decay = (thresholds.decayRate || 0.4) * (elapsedSeconds - 5);
-    computedScore = Math.max(0, computedScore - decay);
-  }
-
-  // 2. Calculate weight additions or apply overriding on specific events
-  if (eventName === "ai_alert_created" || eventName === "screen_telemetry_uploaded") {
-    const alertMessage = String(payload.latestAlert || payload.alert || "");
-    const weight = getWeightForAlert(alertMessage, thresholds);
-    computedScore = Math.min(100, computedScore + weight);
-    payload.suspicionScore = computedScore;
-  } else if (eventName === "suspicion_score_updated") {
-    // Override client-side suspicion score updates with computed server-side score
-    payload.suspicionScore = computedScore;
-  } else {
-    payload.suspicionScore = computedScore;
-  }
-
   const shouldLogEvent =
     eventName !== "camera_preview_updated" ||
     !existingSession?.lastPreviewEventLoggedAt ||
@@ -171,35 +154,37 @@ export async function handleStudentProctoringEvent(io, user, eventName, payload 
     patch.lastPreviewEventLoggedAt = now;
   }
 
-  // Upload live webcam snapshot to S3 bucket to avoid MongoDB bloat
-  if (eventName === "camera_preview_updated" && payload.previewBase64 && payload.previewBase64.length > 100) {
+  // Upload snapshots to S3 bucket to avoid MongoDB bloat and oversized replay responses.
+  if (isS3Configured() && eventName === "camera_preview_updated" && payload.previewBase64 && payload.previewBase64.length > 100) {
     const key = `exams/${exam._id}/students/${studentId}/camera_live.jpg`;
     try {
       const s3Key = await uploadFrame(key, payload.previewBase64, "image/jpeg");
       patch.previewBase64 = s3Key;
     } catch (err) {
-      console.error(`S3 Live camera frame upload failed: ${err.message}`);
+      console.error(`S3 live camera frame upload failed: ${err.name || "UploadError"}`);
+    }
+  }
+  if (isS3Configured() && eventName === "screen_telemetry_uploaded" && payload.base64 && payload.base64.length > 100) {
+    const key = `exams/${exam._id}/students/${studentId}/screen_live.jpg`;
+    try {
+      const s3Key = await uploadFrame(key, payload.base64, "image/jpeg");
+      patch.screenBase64 = s3Key;
+    } catch (err) {
+      console.error(`S3 screen frame upload failed: ${err.name || "UploadError"}`);
     }
   }
 
-  // Ensure computed score is written back into the session patch
-  patch.suspicionScore = computedScore;
-
-  const session = await ExamSession.findOneAndUpdate(
-    { examId: exam._id, studentId },
-    {
-      $set: {
-        ...patch,
-        examId: exam._id,
-        studentId,
-        lastSeenAt: now,
-      },
-      $setOnInsert: {
-        studentName: await findStudentName(studentId),
-      },
-    },
-    { new: true, upsert: true }
-  ).lean();
+  const session = await incrementStudentScore({
+    exam,
+    studentId,
+    amount: payload.scoreDelta,
+    mutationId: payload.mutationId,
+    authoritativeScore: payload.suspicionScore,
+    patch,
+    studentName: await findStudentName(studentId),
+    now,
+  });
+  payload.suspicionScore = session.suspicionScore || 0;
 
   if (shouldLogEvent) {
     await logProctoringEvent(exam, session, eventName, payload);
@@ -286,12 +271,77 @@ function buildEventPatch(eventName, payload) {
     return {
       status: "IN_PROGRESS",
       onlineStatus: "ONLINE",
-      previewBase64: String(payload.base64 || ""),
+      screenBase64: String(payload.base64 || ""),
       latestAlert: "Desktop screen snapshot uploaded",
     };
   }
 
   return {};
+}
+
+export async function incrementStudentScore({
+  exam,
+  studentId,
+  amount,
+  mutationId,
+  authoritativeScore,
+  patch = {},
+  studentName,
+  now = Date.now(),
+}) {
+  const scoreDelta = clampScoreDelta(amount);
+  const normalizedMutationId = String(mutationId || "").trim();
+  const fallbackScore = authoritativeScore == null ? null : clampScore(authoritativeScore);
+  const nowDate = new Date(now);
+  const baseSet = {
+    ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
+    examId: exam._id,
+    studentId,
+    lastSeenAt: now,
+    updatedAt: nowDate,
+    createdAt: { $ifNull: ["$createdAt", nowDate] },
+    studentName: { $ifNull: ["$studentName", studentName || studentId] },
+  };
+  delete baseSet.suspicionScore;
+
+  const currentScore = { $ifNull: ["$suspicionScore", 0] };
+  const appliedMutations = { $ifNull: ["$scoreMutationIds", []] };
+  const hasMutation = normalizedMutationId
+    ? { $in: [normalizedMutationId, appliedMutations] }
+    : false;
+  const incrementedScore = {
+    $min: [100, { $max: [0, { $add: [currentScore, scoreDelta] }] }],
+  };
+  const scoreExpression = scoreDelta > 0
+    ? normalizedMutationId
+      ? { $cond: [hasMutation, currentScore, incrementedScore] }
+      : incrementedScore
+    : fallbackScore == null
+      ? currentScore
+      : { $max: [currentScore, fallbackScore] };
+  const mutationsExpression = scoreDelta > 0 && normalizedMutationId
+    ? {
+        $cond: [
+          hasMutation,
+          appliedMutations,
+          { $slice: [{ $concatArrays: [appliedMutations, [normalizedMutationId]] }, -100] },
+        ],
+      }
+    : appliedMutations;
+
+  return ExamSession.findOneAndUpdate(
+    { examId: exam._id, studentId },
+    [
+      {
+        $set: {
+          ...baseSet,
+          suspicionScore: scoreExpression,
+          scoreMutationIds: mutationsExpression,
+        },
+      },
+    ],
+    { new: true, upsert: true }
+  ).lean();
 }
 
 export async function buildLiveProctoringPayload(exam) {
@@ -338,12 +388,12 @@ async function logProctoringEvent(exam, session, eventName, payload) {
     : String(payload.previewBase64 || session.previewBase64 || "");
 
   let previewFieldVal = "";
-  if (dbBase64 && dbBase64.length > 100) {
+  if (isS3Configured() && dbBase64 && dbBase64.length > 100) {
     const key = `exams/${exam._id}/students/${session.studentId}/${eventName}_${Date.now()}.jpg`;
     try {
       previewFieldVal = await uploadFrame(key, dbBase64, "image/jpeg");
     } catch (err) {
-      console.error(`S3 Upload failed, falling back to raw Base64: ${err.message}`);
+      console.error(`S3 telemetry event upload failed: ${err.name || "UploadError"}`);
       previewFieldVal = dbBase64;
     }
   } else {
@@ -408,6 +458,7 @@ function serializeLiveStudent(session) {
     onlineStatus: session.onlineStatus || "OFFLINE",
     previewUrl: session.previewUrl || "",
     previewBase64: session.previewBase64 || "",
+    screenBase64: session.screenBase64 || "",
     lastUpdatedAt: session.updatedAt || null,
     lastSeenAt: session.lastSeenAt || null,
   };
@@ -436,7 +487,7 @@ async function assertStudentCanSendEvent(user, examId, studentId) {
 
   const exam = await Exam.findOne({
     _id: examId,
-    assignedStudents: studentId,
+    assignedStudents: { $in: studentIdVariants(studentId) },
   });
 
   if (!exam) {
@@ -451,6 +502,12 @@ async function findStudentName(studentId) {
   return student?.name || studentId;
 }
 
+function studentIdVariants(studentId) {
+  const normalized = String(studentId || "").trim().toLowerCase();
+  const compact = normalized.replace(/[^a-z0-9]/g, "");
+  return [...new Set([normalized, compact].filter(Boolean))];
+}
+
 function roomName(examId) {
   return `exam:${examId}`;
 }
@@ -459,6 +516,83 @@ function clampScore(score) {
   const parsed = Number(score);
   if (Number.isNaN(parsed)) return 0;
   return Math.max(0, Math.min(100, parsed));
+}
+
+function clampScoreDelta(amount) {
+  const parsed = Number(amount);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(100, parsed);
+}
+
+export function resolveScoreMutation({
+  existingScore = 0,
+  scoreDelta = 0,
+  mutationId = "",
+  appliedMutationIds = [],
+  authoritativeScore,
+}) {
+  const currentScore = clampScore(existingScore);
+  const delta = clampScoreDelta(scoreDelta);
+  const normalizedMutationId = String(mutationId || "").trim();
+  const hasMutation = normalizedMutationId && appliedMutationIds.includes(normalizedMutationId);
+
+  if (delta > 0) {
+    return {
+      score: hasMutation ? currentScore : clampScore(currentScore + delta),
+      mutationIds: hasMutation || !normalizedMutationId
+        ? appliedMutationIds
+        : [...appliedMutationIds, normalizedMutationId].slice(-100),
+      duplicate: Boolean(hasMutation),
+    };
+  }
+
+  if (authoritativeScore != null) {
+    return {
+      score: Math.max(currentScore, clampScore(authoritativeScore)),
+      mutationIds: appliedMutationIds,
+      duplicate: false,
+    };
+  }
+
+  return {
+    score: currentScore,
+    mutationIds: appliedMutationIds,
+    duplicate: false,
+  };
+}
+
+export function resolveSuspicionScore({
+  existingScore = 0,
+  lastSeenAt,
+  now,
+  thresholds = {},
+  eventName,
+  payloadScore,
+  alertText = "",
+}) {
+  let computedScore = clampScore(existingScore);
+  const referenceTime = lastSeenAt || now;
+  const elapsedSeconds = Math.max(0, (now - referenceTime) / 1000);
+  if (elapsedSeconds > 5) {
+    const decay = (thresholds.decayRate || 0.4) * (elapsedSeconds - 5);
+    computedScore = Math.max(0, computedScore - decay);
+  }
+
+  if (eventName === "suspicion_score_updated") {
+    return clampScore(payloadScore ?? computedScore);
+  }
+
+  if (eventName === "ai_alert_created" || eventName === "screen_telemetry_uploaded") {
+    if (payloadScore != null && !Number.isNaN(Number(payloadScore))) {
+      return clampScore(payloadScore);
+    }
+
+    const text = String(alertText || "").toLowerCase();
+    const weight = getWeightForAlert(text, thresholds);
+    return clampScore(computedScore + weight);
+  }
+
+  return clampScore(computedScore);
 }
 
 function scoreStatus(score) {

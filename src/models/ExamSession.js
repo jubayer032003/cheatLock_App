@@ -45,6 +45,10 @@ const examSessionSchema = new mongoose.Schema(
       max: 100,
       default: 0,
     },
+    scoreMutationIds: {
+      type: [String],
+      default: [],
+    },
     latestAlert: {
       type: String,
       default: "",
@@ -59,6 +63,10 @@ const examSessionSchema = new mongoose.Schema(
       default: "",
     },
     previewBase64: {
+      type: String,
+      default: "",
+    },
+    screenBase64: {
       type: String,
       default: "",
     },

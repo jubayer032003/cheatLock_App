@@ -29,7 +29,30 @@ export function clearAuth() {
   sessionStorage.removeItem(USER_KEY);
 }
 
-export function isTeacherAuthenticated() {
-  return Boolean(getAuthToken() && getAuthUser()?.role === "TEACHER");
+export const ROLE_PERMISSIONS: Record<string, string[]> = {
+  SUPER_ADMIN: ["manage_tenants", "view_audit_logs", "manage_settings", "manage_users", "manage_exams"],
+  INSTITUTION_ADMIN: ["view_audit_logs", "manage_settings", "manage_users", "manage_exams", "manage_courses"],
+  DEPARTMENT_ADMIN: ["manage_users", "manage_exams", "manage_courses"],
+  TEACHER: ["manage_exams", "manage_courses", "view_reports", "proctor_exams"],
+  PROCTOR: ["proctor_exams", "view_reports"],
+  STUDENT: ["take_exams"],
+  OBSERVER: ["view_reports"],
+  AUDITOR: ["view_audit_logs", "view_reports"]
+};
+
+export function hasPermission(role: string, permission: string): boolean {
+  if (role === "SUPER_ADMIN") return true;
+  return (ROLE_PERMISSIONS[role] || []).includes(permission);
 }
 
+export function isTeacherAuthenticated() {
+  const user = getAuthUser();
+  if (!user) return false;
+  const allowedDashboardRoles = [
+    "SUPER_ADMIN",
+    "INSTITUTION_ADMIN",
+    "DEPARTMENT_ADMIN",
+    "TEACHER"
+  ];
+  return Boolean(getAuthToken() && allowedDashboardRoles.includes(user.role));
+}

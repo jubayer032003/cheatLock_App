@@ -66,6 +66,5 @@ const teacherClassSchema = new mongoose.Schema(
 );
 
 teacherClassSchema.index({ teacherId: 1, name: 1, section: 1 }, { unique: true });
-teacherClassSchema.index({ inviteCode: 1 }, { unique: true });
 
 export const TeacherClass = mongoose.model("TeacherClass", teacherClassSchema);

@@ -29,6 +29,7 @@ const proctoringEventSchema = new mongoose.Schema(
         "suspicion_score_updated",
         "ai_alert_created",
         "camera_preview_updated",
+        "screen_telemetry_uploaded",
       ],
     },
     suspicionScore: {
@@ -64,4 +65,3 @@ proctoringEventSchema.index({ examId: 1, studentId: 1, createdAt: 1 });
 proctoringEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000 });
 
 export const ProctoringEvent = mongoose.model("ProctoringEvent", proctoringEventSchema);
-

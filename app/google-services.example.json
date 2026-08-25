@@ -1,0 +1,28 @@
+{
+  "project_info": {
+    "project_number": "replace-with-firebase-project-number",
+    "project_id": "replace-with-firebase-project-id",
+    "storage_bucket": "replace-with-firebase-storage-bucket"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "replace-with-firebase-mobile-app-id",
+        "android_client_info": {
+          "package_name": "com.jubayer.cheatlock"
+        }
+      },
+      "api_key": [
+        {
+          "current_key": "replace-with-firebase-api-key"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

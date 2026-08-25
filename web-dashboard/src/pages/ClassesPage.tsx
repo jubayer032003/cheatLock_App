@@ -83,6 +83,8 @@ export function ClassesPage() {
   }
 
   async function handleDelete(classId: string) {
+    const className = classes.find((item) => item.id === classId)?.name || "this class";
+    if (!window.confirm(`Delete ${className}? This removes the saved roster and cannot be undone.`)) return;
     setSaving(true);
     setMessage("");
     try {

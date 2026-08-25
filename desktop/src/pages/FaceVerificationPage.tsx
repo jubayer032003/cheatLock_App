@@ -4,31 +4,58 @@ import { Card } from "../components/Card";
 import { Button } from "../components/Button";
 import { Loader } from "../components/Loader";
 import { CameraPreview } from "../components/CameraPreview";
+import { useAuth } from "../contexts/AuthContext";
 import { useCamera } from "../contexts/CameraContext";
 import { useFace } from "../contexts/FaceContext";
 import { useLiveness } from "../contexts/LivenessContext";
+import { useToast } from "../hooks/useToast";
 import { FaceDetector } from "../services/FaceDetector";
 import { EmbeddingGenerator } from "../services/EmbeddingGenerator";
 import { apiClient } from "../api/client";
+import { NativeDeviceService } from "../services/NativeDeviceService";
+import { EXAM_CONSENT_POLICY_VERSION } from "../config/consentPolicy";
+import { IDENTITY_VERIFICATION_POLICY_VERSION } from "../config/identityVerification";
+import { IdentityVerificationService } from "../services/IdentityVerificationService";
+import { attemptIdFromSession } from "../services/ExamPreparationStateService";
 import { ShieldAlert, UserCheck } from "lucide-react";
 import { motion } from "framer-motion";
 import { pageVariants } from "../motion/variants";
 
 export function FaceVerificationPage() {
   const navigate = useNavigate();
-  const { pipeline } = useCamera();
+  const { activeExam, activeSession, user } = useAuth();
+  const { pipeline, devices, healthStatus } = useCamera();
   const { setRegisteredFaceProfile } = useFace();
   const { triggerLivenessCheck } = useLiveness();
+  const { showToast } = useToast();
 
   const [step, setStep] = useState<"READY" | "SCANNING" | "VERIFYING" | "SUCCESS" | "FAILED">("READY");
   const [scanStatus, setScanStatus] = useState("Face camera idle...");
   const scanTimer = useRef<number | null>(null);
+  const isMountedRef = useRef(true);
 
   const startVerification = async () => {
+    if (!activeExam) {
+      showToast("Load an assigned exam from the dashboard before identity verification.", "warning");
+      navigate("/dashboard");
+      return;
+    }
+    if (!user) {
+      setStep("FAILED");
+      setScanStatus("Identity verification failed: authenticated student is unavailable.");
+      return;
+    }
+    if (devices.length === 0 || healthStatus === "error" || healthStatus === "disconnected") {
+      setStep("FAILED");
+      setScanStatus("Identity verification failed: camera is unavailable.");
+      return;
+    }
+
     setStep("SCANNING");
     setScanStatus("Initiating presence check (liveness)...");
 
     const passed = await triggerLivenessCheck();
+    if (!isMountedRef.current) return;
     if (!passed) {
       setStep("FAILED");
       setScanStatus("Identity verification failed: presence check failed.");
@@ -40,11 +67,13 @@ export function FaceVerificationPage() {
 
     // Stage 1: Face Capture & Alignment
     scanTimer.current = window.setTimeout(async () => {
+      if (!isMountedRef.current) return;
       setScanStatus("Extracting unit normalized descriptor (192-dim)...");
       
       // Async helper to poll for a frame, retrying up to 15 times with 200ms delay (3 seconds total)
       const getFrameWithRetry = async (retries = 15, delay = 200) => {
         for (let i = 0; i < retries; i++) {
+          if (!isMountedRef.current) return null;
           const f = pipeline.getLatestFrame();
           if (f && f.width > 0 && f.height > 0) {
             return f;
@@ -55,6 +84,7 @@ export function FaceVerificationPage() {
       };
 
       const frame = await getFrameWithRetry();
+      if (!isMountedRef.current) return;
       if (!frame) {
         setStep("FAILED");
         setScanStatus("Webcam frame not available. Ensure camera is active.");
@@ -75,6 +105,7 @@ export function FaceVerificationPage() {
 
       // Run detection in background Web Worker
       const detections = await FaceDetector.detectAsync(frame.data);
+      if (!isMountedRef.current) return;
       if (detections.length === 0) {
         setStep("FAILED");
         setScanStatus("No face detected. Align your face inside the webcam frame.");
@@ -90,46 +121,86 @@ export function FaceVerificationPage() {
 
       // Stage 2: Feature Extraction & Verification
       scanTimer.current = window.setTimeout(async () => {
+        if (!isMountedRef.current) return;
         setStep("VERIFYING");
         setScanStatus("Verifying credentials against registration model...");
 
         try {
           const descriptor = EmbeddingGenerator.generate(ctx, primary);
+          if (!isMountedRef.current) return;
           if (descriptor.length === 0) {
             throw new Error("Failed to extract face alignment embeddings.");
           }
 
           // Post to backend verification endpoint
+          let deviceId: string | null = null;
+          try {
+            deviceId = (await NativeDeviceService.getInstallationDeviceIdentity()).deviceId;
+          } catch {
+            deviceId = null;
+          }
+          const attemptId = activeSession ? attemptIdFromSession(activeSession) : null;
+          if (!attemptId || !deviceId) {
+            throw new Error("Identity verification failed: attempt or device scope is unavailable.");
+          }
+
           const { data } = await apiClient.post<{ ok: boolean; distance: number }>("/auth/face-profile/verify", {
             descriptor,
+            examId: activeExam.id,
+            attemptId,
+            deviceId,
+            consentPolicyVersion: EXAM_CONSENT_POLICY_VERSION,
+            verificationPolicyVersion: IDENTITY_VERIFICATION_POLICY_VERSION,
+            verificationMethod: "face_match",
           });
 
+          if (!isMountedRef.current) return;
           if (data.ok) {
+            IdentityVerificationService.verified({
+              studentId: user.identifier,
+              examId: activeExam.id,
+              attemptId,
+              deviceId,
+              verificationPolicyVersion: IDENTITY_VERIFICATION_POLICY_VERSION,
+            });
             setStep("SUCCESS");
             setScanStatus("Identity verified successfully.");
             
             // Cache verified descriptor locally for continuous exam proctoring
             setRegisteredFaceProfile(descriptor);
 
-            setTimeout(() => {
-              navigate("/exam");
+            scanTimer.current = window.setTimeout(() => {
+              if (isMountedRef.current) {
+                navigate("/exam");
+              }
             }, 2000);
           } else {
             throw new Error(`Biometric distance threshold exceeded (distance: ${data.distance.toFixed(3)}).`);
           }
         } catch (err: any) {
-          setStep("FAILED");
-          setScanStatus(err.response?.data?.message || err.message || "Facial comparison failed.");
+          if (isMountedRef.current) {
+            setStep("FAILED");
+            setScanStatus(err.response?.data?.message || err.message || "Facial comparison failed.");
+          }
         }
       }, 1500);
     }, 1500);
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       if (scanTimer.current) clearTimeout(scanTimer.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!activeExam) {
+      showToast("No exam is loaded. Return to the dashboard and sync your roster or enter an access code.", "warning");
+      navigate("/dashboard", { replace: true });
+    }
+  }, [activeExam, navigate, showToast]);
 
   return (
     <motion.div

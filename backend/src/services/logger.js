@@ -16,11 +16,33 @@ function log(levelName, message, meta = {}) {
     timestamp: new Date().toISOString(),
     level: levelName,
     message,
-    ...meta,
+    ...redactMeta(meta),
   };
 
   // Standard output format as structured JSON
   console.log(JSON.stringify(logPayload));
+}
+
+function redactMeta(meta) {
+  if (!meta || typeof meta !== "object") return {};
+  const redacted = {};
+  for (const [key, value] of Object.entries(meta)) {
+    const normalized = key.toLowerCase();
+    if (
+      normalized.includes("authorization") ||
+      normalized.includes("password") ||
+      normalized.includes("token") ||
+      normalized.includes("secret") ||
+      normalized.includes("base64") ||
+      normalized.includes("descriptor") ||
+      normalized.includes("answer")
+    ) {
+      redacted[key] = "[REDACTED]";
+    } else {
+      redacted[key] = value;
+    }
+  }
+  return redacted;
 }
 
 export const logger = {

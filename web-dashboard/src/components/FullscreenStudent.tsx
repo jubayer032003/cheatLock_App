@@ -2,6 +2,8 @@ import { Camera, Monitor } from "lucide-react";
 import { StatusBadge, statusFromScore } from "./StatusBadge";
 import { ProgressMeter, cn } from "./ui";
 import type { LiveStudent } from "../types";
+import { useAnimatedNumber } from "../hooks/useAnimatedNumber";
+import { scorePercentage } from "../lib/scoreMetrics";
 
 interface FullscreenStudentProps {
   student: LiveStudent;
@@ -10,9 +12,11 @@ interface FullscreenStudentProps {
 }
 
 export function FullscreenStudent({ student, detailTab, setDetailTab }: FullscreenStudentProps) {
-  const status = statusFromScore(student.suspicionScore);
+  const percentage = scorePercentage(student);
+  const status = statusFromScore(percentage);
   const cameraSrc = student.previewUrl || student.previewBase64;
   const screenSrc = student.screenBase64;
+  const displayScore = useAnimatedNumber(percentage);
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_340px] text-slate-202 font-sans p-2">
@@ -62,9 +66,9 @@ export function FullscreenStudent({ student, detailTab, setDetailTab }: Fullscre
         <div className="space-y-1">
           <div className="flex justify-between text-xs text-slate-400">
             <span>Suspicion Score</span>
-            <span className="font-bold text-white font-mono">{student.suspicionScore}/100</span>
+            <span className="font-bold text-white font-mono">{Math.round(displayScore)}/100</span>
           </div>
-          <ProgressMeter value={student.suspicionScore} tone={status === "SUSPICIOUS" ? "danger" : status === "WARNING" ? "warning" : "success"} />
+          <ProgressMeter value={percentage} tone={status === "SUSPICIOUS" ? "danger" : status === "WARNING" ? "warning" : "success"} />
         </div>
 
         <div className="space-y-2.5 pt-2 border-t border-slate-800 text-xs">

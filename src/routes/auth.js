@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import express from "express";
 import jwt from "jsonwebtoken";
+import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { User } from "../models/User.js";
 
@@ -10,17 +11,18 @@ authRouter.post("/signup", async (req, res, next) => {
   try {
     const { name, identifier: rawIdentifier, password, role: rawRole } = req.body;
     const identifier = normalizeIdentifier(rawIdentifier);
-    const role = String(rawRole || "").toUpperCase().trim();
+    const requestedRole = String(rawRole || "").toUpperCase().trim();
+    const role = "STUDENT";
 
-    if (!name || !identifier || !password || !role) {
-      const error = new Error("Name, identifier, password, and role are required.");
+    if (!name || !identifier || !password) {
+      const error = new Error("Name, identifier, and password are required.");
       error.status = 400;
       throw error;
     }
 
-    if (!["STUDENT", "TEACHER"].includes(role)) {
-      const error = new Error("Invalid role.");
-      error.status = 400;
+    if (requestedRole && requestedRole !== "STUDENT") {
+      const error = new Error("Public signup is available for student accounts only. Staff accounts must be created by an administrator.");
+      error.status = 403;
       throw error;
     }
 
@@ -49,8 +51,8 @@ authRouter.post("/signup", async (req, res, next) => {
         identifier: user.identifier,
         role: user.role,
       },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+      config.jwt.secret(),
+      { expiresIn: config.jwt.expiresIn }
     );
 
     res.status(201).json({
@@ -80,7 +82,17 @@ authRouter.post("/login", async (req, res, next) => {
       throw error;
     }
 
-    if (!["STUDENT", "TEACHER"].includes(role)) {
+    const validRoles = [
+      "SUPER_ADMIN",
+      "INSTITUTION_ADMIN",
+      "DEPARTMENT_ADMIN",
+      "TEACHER",
+      "PROCTOR",
+      "STUDENT",
+      "OBSERVER",
+      "AUDITOR"
+    ];
+    if (!validRoles.includes(role)) {
       const error = new Error("Invalid role.");
       error.status = 400;
       throw error;
@@ -97,6 +109,27 @@ authRouter.post("/login", async (req, res, next) => {
         .toLowerCase();
       if (legacyIdentifier && legacyIdentifier !== identifier) {
         user = await User.findOne({ identifier: legacyIdentifier, role });
+      }
+    }
+
+    if (!user) {
+      const dashboardRoles = ["SUPER_ADMIN", "INSTITUTION_ADMIN", "DEPARTMENT_ADMIN", "TEACHER", "PROCTOR", "AUDITOR"];
+      if (dashboardRoles.includes(role)) {
+        user = await User.findOne({
+          identifier,
+          role: { $in: dashboardRoles }
+        });
+        if (!user) {
+          const legacyIdentifier = String(rawIdentifier || email || "")
+            .trim()
+            .toLowerCase();
+          if (legacyIdentifier && legacyIdentifier !== identifier) {
+            user = await User.findOne({
+              identifier: legacyIdentifier,
+              role: { $in: dashboardRoles }
+            });
+          }
+        }
       }
     }
 
@@ -125,8 +158,8 @@ authRouter.post("/login", async (req, res, next) => {
         identifier: user.identifier,
         role: user.role,
       },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+      config.jwt.secret(),
+      { expiresIn: config.jwt.expiresIn }
     );
 
     res.json({

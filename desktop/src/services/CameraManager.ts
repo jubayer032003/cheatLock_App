@@ -21,8 +21,6 @@ export class CameraManager {
     */
   public static async enumerateWebcams(): Promise<MediaDeviceInfo[]> {
     try {
-      // Ensure permissions exist before enumerating labels
-      await this.requestPermission();
       const devices = await navigator.mediaDevices.enumerateDevices();
       return devices.filter((device) => device.kind === "videoinput");
     } catch (err) {

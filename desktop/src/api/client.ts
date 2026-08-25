@@ -1,13 +1,20 @@
 import axios from "axios";
+import { defaultBackendOrigin, isLegacyDevelopmentOrigin, normalizeBackendOrigin } from "../config/backend";
 
-export const DEFAULT_SERVER_URL = "https://cheatlock-backend.onrender.com";
+export const DEFAULT_SERVER_URL = defaultBackendOrigin();
 
 export function getServerUrl(): string {
-  return localStorage.getItem("cheatlock_server_url") || DEFAULT_SERVER_URL;
+  const stored = localStorage.getItem("cheatlock_server_url");
+  if (!stored) return DEFAULT_SERVER_URL;
+  if (isLegacyDevelopmentOrigin(stored) && DEFAULT_SERVER_URL !== normalizeBackendOrigin(stored)) {
+    localStorage.removeItem("cheatlock_server_url");
+    return DEFAULT_SERVER_URL;
+  }
+  return normalizeBackendOrigin(stored);
 }
 
 export function setServerUrl(url: string) {
-  const normalized = url.trim().replace(/\/$/, "");
+  const normalized = normalizeBackendOrigin(url);
   localStorage.setItem("cheatlock_server_url", normalized);
   apiClient.defaults.baseURL = normalized;
 }
@@ -17,10 +24,20 @@ export const apiClient = axios.create({
   timeout: 60000,
 });
 
+let inMemoryAccessToken: string | null = null;
+
+export function setApiAuthToken(token: string | null) {
+  inMemoryAccessToken = token;
+  if (token) {
+    apiClient.defaults.headers.common.Authorization = `Bearer ${token}`;
+  } else {
+    delete apiClient.defaults.headers.common.Authorization;
+  }
+}
+
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem("cheatlock_token");
-  if (token && config.headers) {
-    config.headers.Authorization = `Bearer ${token}`;
+  if (inMemoryAccessToken && config.headers) {
+    config.headers.Authorization = `Bearer ${inMemoryAccessToken}`;
   }
   return config;
 });
@@ -29,8 +46,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem("cheatlock_token");
-      localStorage.removeItem("cheatlock_user");
+      setApiAuthToken(null);
       window.dispatchEvent(new Event("cheatlock_unauthorized"));
     }
     return Promise.reject(error);

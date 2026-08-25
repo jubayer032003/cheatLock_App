@@ -106,26 +106,6 @@ fun PremiumScreen(
 
 @Composable
 private fun AmbientBackground() {
-    val transition = rememberInfiniteTransition(label = "ambient")
-    val driftA by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 28f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(5200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "driftA"
-    )
-    val driftB by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = -22f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(6400, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "driftB"
-    )
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -138,31 +118,7 @@ private fun AmbientBackground() {
                     )
                 )
             )
-    ) {
-        Box(
-            modifier = Modifier
-                .size(320.dp)
-                .offset(x = (-80 + driftA).dp, y = (-40 + driftB).dp)
-                .clip(CircleShape)
-                .background(CheatLockPurpleVibrant.copy(alpha = 0.08f))
-        )
-        Box(
-            modifier = Modifier
-                .size(260.dp)
-                .align(Alignment.TopEnd)
-                .offset(x = (60 - driftB).dp, y = (120 + driftA).dp)
-                .clip(CircleShape)
-                .background(CheatLockPurpleSoft.copy(alpha = 0.06f))
-        )
-        Box(
-            modifier = Modifier
-                .size(220.dp)
-                .align(Alignment.BottomStart)
-                .offset(x = (-40 + driftA).dp, y = (-80 - driftB).dp)
-                .clip(CircleShape)
-                .background(CheatLockNavySurface.copy(alpha = 0.4f))
-        )
-    }
+    )
 }
 
 @Composable
@@ -331,7 +287,7 @@ fun BrandHero(
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
-                        painter = painterResource(id = com.jubayer.cheatlock.R.drawable.ic_logo_emblem),
+                        painter = painterResource(id = com.jubayer.cheatlock.R.drawable.cheatlock_logo),
                         contentDescription = "CheatLock Emblem",
                         modifier = Modifier.size(36.dp)
                     )

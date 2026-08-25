@@ -1,26 +1,31 @@
 {
-  "name": "cheatlock-backend",
+  "name": "cheatlock-workspace",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js"
+    "dev": "npm --prefix backend run dev",
+    "start": "npm --prefix backend run start",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.500.0",
+    "@aws-sdk/s3-request-presigner": "^3.500.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2",
+    "express": "^4.22.2",
     "helmet": "^8.0.0",
+    "ioredis": "^5.3.2",
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^7.2.0",
-    "mongoose": "^8.9.5",
-    "socket.io": "^4.8.1",
-    "@aws-sdk/client-s3": "^3.500.0",
-    "@aws-sdk/s3-request-presigner": "^3.500.0",
-    "ioredis": "^5.3.2",
-    "zod": "^3.22.4",
-    "puppeteer": "^21.9.0"
+    "mongoose": "^8.24.1",
+    "puppeteer": "^21.9.0",
+    "socket.io": "^4.8.3",
+    "zod": "^3.22.4"
+  },
+  "overrides": {
+    "body-parser": "1.20.6",
+    "ws": "8.21.1"
   }
 }

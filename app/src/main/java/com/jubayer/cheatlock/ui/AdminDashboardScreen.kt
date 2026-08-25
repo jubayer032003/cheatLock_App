@@ -109,7 +109,7 @@ fun AdminDashboardScreen(
                         title = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Image(
-                                    painter = painterResource(id = com.jubayer.cheatlock.R.drawable.ic_logo_emblem),
+                                    painter = painterResource(id = com.jubayer.cheatlock.R.drawable.cheatlock_logo),
                                     contentDescription = null,
                                     modifier = Modifier.size(32.dp)
                                 )

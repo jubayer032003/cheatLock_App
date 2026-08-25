@@ -4,8 +4,9 @@ import { useToast } from "../hooks/useToast";
 import { displayMonitor, DisplayEvent } from "../services/DisplayMonitor";
 import { screenCaptureManager, ScreenHealthStatus } from "../services/ScreenCaptureManager";
 import { PipelineFrame } from "../services/CapturePipeline";
-import { SocketService } from "../socket/service";
 import { useSuspicion } from "./SuspicionContext";
+import { telemetryUploadQueue } from "../services/TelemetryUploadQueue";
+import { FIXED_CAPTURE_POLICY } from "../config/capturePolicy";
 
 interface ScreenContextType {
   captureHealth: ScreenHealthStatus;
@@ -46,19 +47,46 @@ export function ScreenProvider({ children }: { children: React.ReactNode }) {
     const examId = examIdRef.current;
     if (!examId || !user) return;
 
-    console.log(`[ScreenContext] Captured screenshot (${pFrame.mode}) - Size: ${(pFrame.frame.sizeBytes / 1024).toFixed(1)} KB`);
+    console.log(`[ScreenContext] Captured screenshot (${pFrame.mode}) - Size: ${(pFrame.frame.sizeBytes / 1024).toFixed(1)} KB; drift=${pFrame.driftMs}ms`);
 
     // WebSockets upload payload
     try {
-      const socket = SocketService.getInstance();
-      socket.emit("screen_telemetry_uploaded", {
-        examId,
-        studentId: user.identifier,
-        timestamp: pFrame.timestamp,
-        mode: pFrame.mode,
+      const nowIso = new Date().toISOString();
+      const evidenceId = `screen-${examId}-${user.identifier}-${pFrame.sequenceNumber}`;
+      void telemetryUploadQueue.enqueue({
+        id: evidenceId,
+        eventName: "screen_telemetry_uploaded",
+        sensitive: true,
+        priority: pFrame.priority,
         sizeBytes: pFrame.frame.sizeBytes,
-        base64: pFrame.frame.base64,
-      }).catch(() => {});
+        createdAt: pFrame.timestamp,
+        payload: {
+          idempotencyKey: evidenceId,
+          evidenceId,
+          examId,
+          studentId: user.identifier,
+          capturedAt: new Date(pFrame.captureStartedAt).toISOString(),
+          captureStartedAt: new Date(pFrame.captureStartedAt).toISOString(),
+          captureStartedAtMs: pFrame.captureStartedAt,
+          captureCompletedAt: new Date(pFrame.captureCompletedAt).toISOString(),
+          captureCompletedAtMs: pFrame.captureCompletedAt,
+          processingCompletedAt: nowIso,
+          sequenceNumber: pFrame.sequenceNumber,
+          timestamp: pFrame.timestamp,
+          mode: pFrame.mode,
+          priority: pFrame.priority,
+          suspicious: pFrame.suspicious,
+          suspiciousEventId: pFrame.suspiciousEventId,
+          expectedIntervalMs: pFrame.expectedIntervalMs,
+          actualIntervalMs: pFrame.actualIntervalMs,
+          driftMs: pFrame.driftMs,
+          sizeBytes: pFrame.frame.sizeBytes,
+          mimeType: pFrame.frame.mimeType,
+          width: pFrame.frame.width,
+          height: pFrame.frame.height,
+          base64: pFrame.frame.base64,
+        },
+      });
     } catch {}
   }, [user]);
 
@@ -77,10 +105,17 @@ export function ScreenProvider({ children }: { children: React.ReactNode }) {
         showToast("Screen capture stopped by candidate.", "error");
         reportViolationEvent("SCREEN_SHARE_STOPPED", "Screen", 1.0, "Student terminated screen share permission.");
       }
+      if (status === "failed") {
+        showToast("Native screen capture failed.", "error");
+        reportViolationEvent("SCREEN_CAPTURE_FAILED", "Screen", 1.0, "Native screen capture worker reported a failure.");
+      }
     });
 
     // Request display share permissions and schedule 30s interval
-    const captureStarted = await screenCaptureManager.startCapture(30, "image/jpeg");
+    const captureStarted = await screenCaptureManager.startCapture(
+      FIXED_CAPTURE_POLICY.captureIntervalMs / 1000,
+      FIXED_CAPTURE_POLICY.preferredFormat
+    );
     if (!captureStarted) {
       setIsMonitoring(false);
       displayMonitor.unregisterListener(dispatchDisplayTelemetry);
@@ -119,11 +154,7 @@ export function ScreenProvider({ children }: { children: React.ReactNode }) {
 
   const triggerEventSnapshot = useCallback(async () => {
     if (!isMonitoring || captureHealth !== "capturing") return;
-    try {
-      await screenCaptureManager.triggerSnapshot("EVENT_TRIGGERED");
-    } catch (err) {
-      console.warn("[ScreenContext] Failed to trigger event-triggered snapshot:", err);
-    }
+    screenCaptureManager.markSuspiciousEvidence();
   }, [isMonitoring, captureHealth]);
 
   // Cleanup on unmount

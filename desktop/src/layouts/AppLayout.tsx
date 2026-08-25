@@ -1,16 +1,17 @@
 import { Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { useSocket } from "../contexts/SocketContext";
-import { ShieldCheck, LogOut, Server } from "lucide-react";
+import { LogOut, Server } from "lucide-react";
 import { Button } from "../components/Button";
+import cheatLockLogo from "../assets/cheatlock-logo.png";
 
 export function AppLayout() {
   const { user, logout, serverUrl } = useAuth();
   const { status: socketStatus } = useSocket();
   const navigate = useNavigate();
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate("/login");
   };
 
@@ -32,8 +33,8 @@ export function AppLayout() {
       {/* Premium Compact Header */}
       <header className="h-14 px-5 border-b border-border bg-surface-base flex items-center justify-between shrink-0 select-none">
         <div className="flex items-center gap-2.5">
-          <div className="h-8 w-8 rounded-lg bg-accent/10 flex items-center justify-center text-accent border border-accent/20">
-            <ShieldCheck size={18} />
+          <div className="h-8 w-8 overflow-hidden rounded-lg bg-surface-base flex items-center justify-center border border-accent/20">
+            <img src={cheatLockLogo} alt="CheatLock logo" className="h-full w-full object-cover" />
           </div>
           <div>
             <h1 className="font-semibold text-sm tracking-tight text-zinc-50">

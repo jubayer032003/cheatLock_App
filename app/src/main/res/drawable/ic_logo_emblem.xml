@@ -1,30 +1,3 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="200dp"
-    android:height="200dp"
-    android:viewportWidth="200"
-    android:viewportHeight="200">
-
-    <!-- Outer 'C' Shape (Navy/Deep Purple) -->
-    <path
-        android:pathData="M165,65 C155,45 135,35 110,35 C70,35 40,65 40,105 C40,145 70,175 110,175 C135,175 155,165 165,145"
-        android:strokeColor="#6D28D9"
-        android:strokeWidth="18"
-        android:strokeLineCap="round" />
-
-    <!-- Inner 'L' Shape (Navy/Deep Purple) -->
-    <path
-        android:pathData="M95,70 V125 H145"
-        android:strokeColor="#1F2937"
-        android:strokeWidth="18"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-
-    <!-- Checkmark (Vibrant Purple) -->
-    <path
-        android:pathData="M125,95 L140,115 L175,75"
-        android:strokeColor="#8B5CF6"
-        android:strokeWidth="14"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-
-</vector>
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@drawable/cheatlock_logo"
+    android:gravity="center" />

@@ -45,6 +45,10 @@ const examSessionSchema = new mongoose.Schema(
       max: 100,
       default: 0,
     },
+    scoreMutationIds: {
+      type: [String],
+      default: [],
+    },
     latestAlert: {
       type: String,
       default: "",
@@ -62,8 +66,34 @@ const examSessionSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    screenBase64: {
+      type: String,
+      default: "",
+    },
     lastPreviewEventLoggedAt: Number,
     lastSeenAt: Number,
+    answerDraft: {
+      answers: {
+        type: Map,
+        of: String,
+        default: {},
+      },
+      currentIndex: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      markedQuestions: {
+        type: [Number],
+        default: [],
+      },
+      revision: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      savedAt: Date,
+    },
   },
   { timestamps: true }
 );

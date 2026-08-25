@@ -4,6 +4,7 @@ export interface SuspicionViolation {
   eventType: string;
   sourceModule: string;
   scoreChange: number;
+  totalSuspicionScore: number;
   severity: "low" | "medium" | "high" | "critical";
   confidence: number;
   reason: string;
@@ -26,19 +27,20 @@ export interface SuspicionWeights {
 export type RiskLevelType = "Normal" | "Low Risk" | "Moderate Risk" | "High Risk" | "Critical Risk";
 
 export class SuspicionScoreEngine {
+  private static readonly DEFAULT_ALERT_WEIGHT = 20;
   private score = 0;
   private timeline: SuspicionViolation[] = [];
   private weights: SuspicionWeights = {
-    faceMissing: 25,
-    multipleFaces: 30,
-    phoneDetected: 20,
-    bookDetected: 15,
-    speechDetected: 10,
-    windowSwitch: 15,
-    fullscreenExit: 15,
-    clipboardUsage: 10,
-    multiMonitor: 25,
-    livenessFailure: 40,
+    faceMissing: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    multipleFaces: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    phoneDetected: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    bookDetected: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    speechDetected: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    windowSwitch: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    fullscreenExit: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    clipboardUsage: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    multiMonitor: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
+    livenessFailure: SuspicionScoreEngine.DEFAULT_ALERT_WEIGHT,
   };
 
   private decayRatePerSec = 0.4; // Decay 0.4 points per second (2 points per 5 seconds)
@@ -79,6 +81,7 @@ export class SuspicionScoreEngine {
       eventType,
       sourceModule,
       scoreChange,
+      totalSuspicionScore: this.score,
       severity,
       confidence,
       reason,
@@ -168,8 +171,10 @@ export class SuspicionScoreEngine {
         return this.weights.speechDetected;
       case "WINDOW_BLURRED":
       case "app_switch":
+      case "FOCUS_LOSS": // Legacy alias
         return this.weights.windowSwitch;
       case "FULLSCREEN_EXITED":
+      case "FULLSCREEN_EXIT": // Legacy alias
         return this.weights.fullscreenExit;
       case "CLIPBOARD_COPIED":
         return this.weights.clipboardUsage;
@@ -184,7 +189,7 @@ export class SuspicionScoreEngine {
   }
 
   private calculateSeverity(scoreChange: number): "low" | "medium" | "high" | "critical" {
-    if (scoreChange >= 35) return "critical";
+    if (scoreChange >= 35) return "high";
     if (scoreChange >= 20) return "high";
     if (scoreChange >= 10) return "medium";
     return "low";

@@ -30,9 +30,57 @@ async function resolveSubmissionExamId(studentId, rawExamId) {
   return examId;
 }
 
+submissionsRouter.post("/warnings", requireAuth, async (req, res, next) => {
+  try {
+    const studentId = req.user.role === "STUDENT"
+      ? req.user.identifier.trim().toLowerCase()
+      : String(req.body.studentId || req.user.identifier).trim().toLowerCase();
+    const examId = await resolveSubmissionExamId(studentId, req.body.examId);
+
+    if (!examId) {
+      const error = new Error("No active exam session found for warning registration.");
+      error.status = 400;
+      throw error;
+    }
+
+    const appSwitchWarnings = Number(req.body.appSwitchWarnings || 0);
+    const faceMissingWarnings = Number(req.body.faceMissingWarnings || 0);
+    const audioWarnings = Number(req.body.audioWarnings || 0);
+    const phoneWarnings = Number(req.body.phoneWarnings || 0);
+    const totalWarnings = Number(req.body.totalWarnings || 0);
+
+    const submission = await Submission.findOneAndUpdate(
+      { studentId, examId },
+      {
+        $inc: {
+          appSwitchWarnings,
+          faceMissingWarnings,
+          audioWarnings,
+          phoneWarnings,
+          totalWarnings,
+        },
+        $set: {
+          riskLevel: req.body.riskLevel || "Low Risk",
+          submittedAt: Number(req.body.submittedAt) || Date.now(),
+        }
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+
+    res.status(200).json({
+      ok: true,
+      submission,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 submissionsRouter.post("/", requireAuth, async (req, res, next) => {
   try {
-    const studentId = String(req.body.studentId || req.user.identifier).trim().toLowerCase();
+    const studentId = req.user.role === "STUDENT"
+      ? req.user.identifier.trim().toLowerCase()
+      : String(req.body.studentId || req.user.identifier).trim().toLowerCase();
     const examId = await resolveSubmissionExamId(studentId, req.body.examId);
 
     const totalWarnings =

@@ -10,12 +10,14 @@ import {
   UserRound,
   ShieldX
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { AssignStudentsToExamPanel } from "../components/AssignStudentsToExamPanel";
 import { fetchLiveProctoring, fetchTeacherExam, sendProctoringTestEvent, updateIntegrityReview } from "../lib/api";
 import { createProctoringSocket } from "../lib/socket";
+import { mergeAuthoritativeStudent, scorePercentage, scoreUpdatedAt } from "../lib/scoreMetrics";
 import { statusFromScore } from "../components/StatusBadge";
 import { StudentTile } from "../components/StudentTile";
 import { StudentDetail } from "../components/StudentDetail";
@@ -26,8 +28,6 @@ import {
   Dialog,
   EmptyState,
   ErrorState,
-  MetricCard,
-  PageHeader,
   SkeletonBlock,
   cn,
 } from "../components/ui";
@@ -43,6 +43,10 @@ import type {
 import { Socket } from "socket.io-client";
 
 type FilterState = "ALL" | StudentStatus;
+const ENABLE_PROCTORING_TEST_TOOLS = import.meta.env.VITE_ENABLE_PROCTORING_TEST_TOOLS === "true";
+const SCORE_TRACE_ENABLED = import.meta.env.VITE_SUSPICIOUS_SCORE_TRACE === "true";
+type SocketState = "Connecting" | "Live" | "Disconnected" | "Reconnect pending";
+type CommandFeedback = { tone: "success" | "danger" | "info"; message: string };
 
 export function LiveProctoringPage() {
   const { examId = "" } = useParams();
@@ -50,7 +54,7 @@ export function LiveProctoringPage() {
   const [exam, setExam] = useState<Exam | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<LiveStudent | null>(null);
   const [fullscreenStudent, setFullscreenStudent] = useState<LiveStudent | null>(null);
-  const [socketState, setSocketState] = useState("Connecting");
+  const [socketState, setSocketState] = useState<SocketState>("Connecting");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<FilterState>("ALL");
@@ -70,6 +74,9 @@ export function LiveProctoringPage() {
   const [testAlert, setTestAlert] = useState("");
   const [testBusy, setTestBusy] = useState(false);
   const [detailTab, setDetailTab] = useState<"camera" | "screen">("camera");
+  const [pendingCommandKey, setPendingCommandKey] = useState("");
+  const pendingCommandKeyRef = useRef("");
+  const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
 
   const loadLiveData = useCallback(async () => {
     if (!examId) return;
@@ -79,12 +86,33 @@ export function LiveProctoringPage() {
         fetchLiveProctoring(examId),
         fetchTeacherExam(examId),
       ]);
-      setData(liveData);
+      setData((current) => {
+        if (!current) return liveData;
+        const mergedStudents = liveData.activeStudents.map((newStudent) => {
+          const prev = current.activeStudents.find((student) => student.studentId === newStudent.studentId);
+          const scoreSafeStudent = mergeAuthoritativeStudent(prev, newStudent);
+          if (prev && scoreUpdatedAt(prev) > scoreUpdatedAt(scoreSafeStudent)) return prev;
+          return {
+            ...scoreSafeStudent,
+            screenBase64: scoreSafeStudent.screenBase64 || prev?.screenBase64,
+            faceStatus: scoreSafeStudent.faceStatus || prev?.faceStatus,
+            audioStatus: scoreSafeStudent.audioStatus || prev?.audioStatus,
+            focusStatus: scoreSafeStudent.focusStatus || prev?.focusStatus,
+            multiMonitorStatus: scoreSafeStudent.multiMonitorStatus || prev?.multiMonitorStatus,
+            clipboardStatus: scoreSafeStudent.clipboardStatus || prev?.clipboardStatus,
+            violationsList: scoreSafeStudent.violationsList || prev?.violationsList || [],
+          };
+        });
+        return { ...liveData, activeStudents: mergedStudents };
+      });
       setExam(examDetails);
       setLastSyncedAt(new Date());
       setSelectedStudent((current) => {
-        if (!current) return liveData.activeStudents[0] || null;
-        return liveData.activeStudents.find((student) => student.studentId === current.studentId) || current;
+        if (!current || !liveData.activeStudents.some((student) => student.studentId === current.studentId)) {
+          return liveData.activeStudents[0] || null;
+        }
+        const incoming = liveData.activeStudents.find((student) => student.studentId === current.studentId);
+        return incoming ? mergeAuthoritativeStudent(current, incoming) : current;
       });
     } catch (err: any) {
       setError(readErrorMessage(err, "Could not load live proctoring."));
@@ -107,8 +135,10 @@ export function LiveProctoringPage() {
         if (!current) return current;
         const mergedStudents = event.students.map((newStudent) => {
           const prev = current.activeStudents.find((s) => s.studentId === newStudent.studentId);
+          const scoreSafeStudent = mergeAuthoritativeStudent(prev, newStudent);
+          if (prev && scoreUpdatedAt(prev) > scoreUpdatedAt(scoreSafeStudent)) return prev;
           return {
-            ...newStudent,
+            ...scoreSafeStudent,
             screenBase64: prev?.screenBase64,
             faceStatus: prev?.faceStatus,
             audioStatus: prev?.audioStatus,
@@ -125,22 +155,13 @@ export function LiveProctoringPage() {
 
     const mergeStudentUpdate = (student: LiveStudent, eventName?: string) => {
       const alertMsg = student.latestAlert || "";
-
-      if (student.suspicionScore >= 75 && eventName === "ai_alert_created") {
+      const percentage = scorePercentage(student);
+      if (percentage >= 75 && eventName === "AI_ALERT") {
         setActiveAlert({
           student: student.studentName || student.studentId,
           msg: alertMsg,
-          score: student.suspicionScore
+          score: percentage
         });
-        try {
-          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-          const osc = audioCtx.createOscillator();
-          osc.type = "sine";
-          osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-          osc.connect(audioCtx.destination);
-          osc.start();
-          osc.stop(audioCtx.currentTime + 0.18);
-        } catch {}
       }
 
       let faceStatus = student.faceStatus;
@@ -179,24 +200,42 @@ export function LiveProctoringPage() {
         clipboardStatus = "Clipboard alert";
       }
 
-      const severity: "low" | "medium" | "high" = student.suspicionScore >= 70 ? "high" : student.suspicionScore >= 40 ? "medium" : "low";
+      const severity: "low" | "medium" | "high" = percentage >= 70 ? "high" : percentage >= 40 ? "medium" : "low";
 
       setData((current) => {
         if (!current) return current;
         const exists = current.activeStudents.some((item) => item.studentId === student.studentId);
         const prev = current.activeStudents.find((item) => item.studentId === student.studentId);
+        const scoreSafeStudent = mergeAuthoritativeStudent(prev, student);
+        if (SCORE_TRACE_ENABLED) {
+          console.debug("[DASHBOARD_SCORE_SOURCE]", {
+            studentSession: student.sessionId || "unknown",
+            source: eventName || "SOCKET",
+            previousScore: prev ? scorePercentage(prev) : null,
+            incomingScore: percentage,
+            incomingDelta: student.scoreDelta ?? null,
+            resultingScore: scorePercentage(scoreSafeStudent),
+            eventId: student.eventId || student.mutationId || null,
+          });
+          console.debug("[DASHBOARD SCORE RECEIVED]", {
+            eventId: student.eventId || student.mutationId || null,
+            authoritativeScore: scorePercentage(scoreSafeStudent),
+          });
+        }
+        if (prev && scoreUpdatedAt(prev) > scoreUpdatedAt(scoreSafeStudent)) return current;
 
         let violationsList = prev?.violationsList || [];
-        if (student.latestAlert && prev?.latestAlert !== student.latestAlert) {
+        if (scoreSafeStudent.latestAlert && prev?.latestAlert !== scoreSafeStudent.latestAlert) {
           violationsList = [
-            { type: eventName || "ALERT", message: student.latestAlert, timestamp: Date.now() },
+            { type: eventName || "ALERT", message: scoreSafeStudent.latestAlert, timestamp: Date.now() },
             ...violationsList
           ].slice(0, 55);
         }
 
         const merged: LiveStudent = {
           ...prev,
-          ...student,
+          ...scoreSafeStudent,
+          suspicionScore: scorePercentage(scoreSafeStudent),
           faceStatus: faceStatus || prev?.faceStatus || "Matching",
           audioStatus: audioStatus || prev?.audioStatus || "Quiet",
           focusStatus: focusStatus || prev?.focusStatus || "Focused",
@@ -215,13 +254,15 @@ export function LiveProctoringPage() {
 
       setSelectedStudent((current) => {
         if (current?.studentId !== student.studentId) return current;
-        const violationsList = student.latestAlert && current.latestAlert !== student.latestAlert
-          ? [{ type: eventName || "ALERT", message: student.latestAlert, timestamp: Date.now() }, ...(current.violationsList || [])].slice(0, 55)
+        const scoreSafeStudent = mergeAuthoritativeStudent(current, student);
+        const violationsList = scoreSafeStudent.latestAlert && current.latestAlert !== scoreSafeStudent.latestAlert
+          ? [{ type: eventName || "ALERT", message: scoreSafeStudent.latestAlert, timestamp: Date.now() }, ...(current.violationsList || [])].slice(0, 55)
           : (current.violationsList || []);
 
         return {
           ...current,
-          ...student,
+          ...scoreSafeStudent,
+          suspicionScore: scorePercentage(scoreSafeStudent),
           faceStatus: faceStatus || current.faceStatus || "Matching",
           audioStatus: audioStatus || current.audioStatus || "Quiet",
           focusStatus: focusStatus || current.focusStatus || "Focused",
@@ -233,9 +274,11 @@ export function LiveProctoringPage() {
 
       setFullscreenStudent((current) => {
         if (current?.studentId !== student.studentId) return current;
+        const scoreSafeStudent = mergeAuthoritativeStudent(current, student);
         return {
           ...current,
-          ...student,
+          ...scoreSafeStudent,
+          suspicionScore: scorePercentage(scoreSafeStudent),
           faceStatus: faceStatus || current.faceStatus || "Matching",
           audioStatus: audioStatus || current.audioStatus || "Quiet",
           focusStatus: focusStatus || current.focusStatus || "Focused",
@@ -251,7 +294,7 @@ export function LiveProctoringPage() {
             studentId: student.studentId,
             student: student.studentName || student.studentId,
             alert: student.latestAlert,
-            score: student.suspicionScore,
+            score: percentage,
             severity,
             time: new Date(),
           },
@@ -263,7 +306,12 @@ export function LiveProctoringPage() {
 
     socket.on("connect", () => {
       setSocketState("Live");
-      socket.emit("join_exam_room", { examId });
+      socket.emit("join_exam_room", { examId }, (acknowledgement: { ok: boolean; message?: string }) => {
+        if (!acknowledgement?.ok) {
+          setSocketState("Reconnect pending");
+          setError(acknowledgement?.message || "Could not subscribe to the live exam room.");
+        }
+      });
     });
     socket.on("disconnect", () => setSocketState("Disconnected"));
     socket.on("connect_error", () => setSocketState("Reconnect pending"));
@@ -276,30 +324,38 @@ export function LiveProctoringPage() {
     socket.on("camera_preview_updated", (payload) => mergeStudentUpdate(payload, "CAMERA_PREVIEW_UPDATED"));
 
     socket.on("screen_telemetry_uploaded", (payload: any) => {
+      mergeStudentUpdate(payload, "SCREEN_TELEMETRY_UPLOADED");
+      const screenSrc = payload.screenBase64 || payload.base64 || payload.screenPreviewUrl || payload.previewUrl || payload.previewBase64;
+      const payloadUpdatedAt = scoreUpdatedAt(payload);
+      const receivedAt = Date.now();
       setData((current) => {
         if (!current) return current;
         return {
           ...current,
           activeStudents: current.activeStudents.map((item) =>
-            item.studentId === payload.studentId
-              ? { ...item, screenBase64: payload.base64, lastScreenUpdatedAt: Date.now() }
+            item.studentId === payload.studentId && scoreUpdatedAt(item) <= payloadUpdatedAt
+              ? { ...item, screenBase64: screenSrc, lastScreenUpdatedAt: receivedAt }
               : item
           ),
         };
       });
       setSelectedStudent((current) => {
-        if (current && current.studentId === payload.studentId) {
-          return { ...current, screenBase64: payload.base64, lastScreenUpdatedAt: Date.now() };
+        if (current && current.studentId === payload.studentId && scoreUpdatedAt(current) <= payloadUpdatedAt) {
+          return { ...current, screenBase64: screenSrc, lastScreenUpdatedAt: receivedAt };
         }
         return current;
       });
       setFullscreenStudent((current) => {
-        if (current && current.studentId === payload.studentId) {
-          return { ...current, screenBase64: payload.base64, lastScreenUpdatedAt: Date.now() };
+        if (current && current.studentId === payload.studentId && scoreUpdatedAt(current) <= payloadUpdatedAt) {
+          return { ...current, screenBase64: screenSrc, lastScreenUpdatedAt: receivedAt };
         }
         return current;
       });
     });
+
+    // Register every listener before connecting so the authoritative room snapshot
+    // cannot arrive during setup and be missed.
+    socket.connect();
 
     return () => {
       socket.disconnect();
@@ -307,17 +363,41 @@ export function LiveProctoringPage() {
   }, [examId]);
 
   const sendCommand = (studentId: string, command: string, message?: string) => {
-    if (!socketRef.current) return;
-    socketRef.current.emit("teacher_command", {
-      examId,
-      studentId,
-      command,
-      message,
-    }, (ack: any) => {
-      if (!ack?.ok) {
-        setError(ack?.message || "Failed to transmit proctoring command.");
+    if (!socketRef.current?.connected || !examId) {
+      setCommandFeedback({ tone: "danger", message: "Live connection is unavailable. Reconnect before sending a proctoring command." });
+      return;
+    }
+    const key = `${studentId}:${command}`;
+    if (pendingCommandKeyRef.current) return;
+    pendingCommandKeyRef.current = key;
+    setPendingCommandKey(key);
+    setCommandFeedback({ tone: "info", message: `Sending ${commandLabel(command)} to selected student.` });
+    socketRef.current.timeout(10_000).emit(
+      "teacher_command",
+      {
+        examId,
+        studentId,
+        command,
+        message,
+      },
+      (timeoutError: Error | null, ack: any) => {
+        if (pendingCommandKeyRef.current === key) pendingCommandKeyRef.current = "";
+        setPendingCommandKey("");
+        if (timeoutError) {
+          const messageText = "The student did not acknowledge this command within 10 seconds.";
+          setError(messageText);
+          setCommandFeedback({ tone: "danger", message: messageText });
+          return;
+        }
+        if (!ack?.ok) {
+          const messageText = ack?.message || "Failed to transmit proctoring command.";
+          setError(messageText);
+          setCommandFeedback({ tone: "danger", message: messageText });
+          return;
+        }
+        setCommandFeedback({ tone: "success", message: `${commandLabel(command)} sent to selected student.` });
       }
-    });
+    );
   };
 
   const handleSaveReview = async (studentId: string) => {
@@ -331,10 +411,12 @@ export function LiveProctoringPage() {
   };
 
   const students = data?.activeStudents || [];
+  const offlineStudents = students.filter((student) => student.onlineStatus !== "ONLINE").length;
+  const socketIssue = socketState === "Disconnected" || socketState === "Reconnect pending";
   const analytics = useMemo(() => {
-    const suspicious = students.filter((student) => statusFromScore(student.suspicionScore) === "SUSPICIOUS").length;
-    const warning = students.filter((student) => statusFromScore(student.suspicionScore) === "WARNING").length;
-    const average = students.length ? Math.round(students.reduce((sum, student) => sum + student.suspicionScore, 0) / students.length) : 0;
+    const suspicious = students.filter((student) => statusFromScore(scorePercentage(student)) === "SUSPICIOUS").length;
+    const warning = students.filter((student) => statusFromScore(scorePercentage(student)) === "WARNING").length;
+    const average = students.length ? Math.round(students.reduce((sum, student) => sum + scorePercentage(student), 0) / students.length) : 0;
     const online = students.filter((student) => student.onlineStatus === "ONLINE").length;
     const integrity = Math.max(0, Math.round(100 - average * 0.55 - suspicious * 4));
     return { suspicious, warning, average, online, integrity, alertsPerMinute: alertFeed.slice(0, 8).length };
@@ -343,13 +425,15 @@ export function LiveProctoringPage() {
   const visibleStudents = useMemo(() => {
     const term = search.trim().toLowerCase();
     return [...students]
-      .sort((first, second) => second.suspicionScore - first.suspicionScore)
-      .filter((student) => filter === "ALL" || statusFromScore(student.suspicionScore) === filter)
+      .sort((first, second) => scorePercentage(second) - scorePercentage(first))
+      .filter((student) => filter === "ALL" || statusFromScore(scorePercentage(student)) === filter)
       .filter((student) => {
         if (!term) return true;
         return [student.studentName, student.rollId, student.studentId].some((value) => value?.toLowerCase().includes(term));
       });
   }, [filter, search, students]);
+  const topRiskStudent = visibleStudents[0];
+  const topRiskScore = topRiskStudent ? scorePercentage(topRiskStudent) : 0;
 
   const filteredTimelineAlerts = useMemo(() => {
     return alertFeed.filter((item) => {
@@ -363,9 +447,9 @@ export function LiveProctoringPage() {
     () =>
       students
         .slice()
-        .sort((first, second) => second.suspicionScore - first.suspicionScore)
+        .sort((first, second) => scorePercentage(second) - scorePercentage(first))
         .slice(0, 10)
-        .map((student) => ({ name: shortName(student.studentName || student.studentId), score: student.suspicionScore })),
+        .map((student) => ({ name: shortName(student.studentName || student.studentId), score: scorePercentage(student) })),
     [students]
   );
 
@@ -389,34 +473,106 @@ export function LiveProctoringPage() {
   }
 
   return (
-    <div className="space-y-6 text-slate-100 font-sans">
-      <PageHeader
-        eyebrow={<span className="inline-flex items-center gap-2 text-violet-400 font-mono"><Radio size={14} className="animate-pulse" /> {socketState}</span>}
-        title={data?.exam.title || "Live Proctoring Dashboard"}
-        description={`AI aggregated suspicion scores and proctor controls. Last sync: ${lastSyncedAt ? lastSyncedAt.toLocaleTimeString() : "Pending"}.`}
-        actions={<button className="secondary-button hover:bg-slate-800 transition" type="button" onClick={() => loadLiveData()}><RefreshCw size={17} />Refresh</button>}
-      />
+    <div className="space-y-5 text-slate-100 font-sans">
+      <div className="sr-only" role="status" aria-live="polite">
+        {socketState}. {loading ? "Loading live proctoring data." : `${students.length} active students. ${offlineStudents} offline.`}
+        {commandFeedback ? ` ${commandFeedback.message}` : ""}
+      </div>
+      <section className="relative overflow-hidden rounded-lg border border-slate-800 bg-slate-950 shadow-2xl shadow-slate-950/20">
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-emerald-300 via-cyan-300 to-violet-300" />
+        <div className="grid gap-5 p-5 lg:grid-cols-[1fr_220px] lg:items-stretch lg:p-6">
+          <div className="min-w-0">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-2 rounded border px-3 py-1.5 text-xs font-black uppercase tracking-[0.18em]",
+                  socketState === "Live"
+                    ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+                    : "border-amber-400/25 bg-amber-400/10 text-amber-200"
+                )}
+              >
+                <Radio size={14} className={socketState === "Live" ? "motion-safe:animate-pulse" : ""} />
+                {socketState}
+              </span>
+              <span className="rounded border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-mono text-slate-300">
+                Synced {lastSyncedAt ? lastSyncedAt.toLocaleTimeString() : "pending"}
+              </span>
+            </div>
+
+            <h1 className="truncate text-3xl font-black tracking-tight text-white sm:text-4xl">
+              {data?.exam.title || exam?.title || "Live proctoring"}
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              Monitor live streams, score changes, alerts, and review decisions from one focused exam console.
+            </p>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <LiveStatCard icon={Users} label="Students" value={students.length} helper={`${analytics.online} online`} tone="cyan" />
+              <LiveStatCard icon={AlertTriangle} label="Needs Review" value={analytics.suspicious} helper={`${analytics.warning} warnings`} tone="rose" />
+              <LiveStatCard icon={Activity} label="Avg Score" value={`${analytics.average}/100`} helper="live suspicion" tone={analytics.average >= 70 ? "rose" : analytics.average >= 40 ? "amber" : "cyan"} />
+              <LiveStatCard icon={ShieldCheck} label="Integrity" value={`${analytics.integrity}%`} helper={`${offlineStudents} offline`} tone="emerald" />
+            </div>
+          </div>
+
+          <div className="flex rounded-lg border border-slate-800 bg-slate-900/70 p-4 lg:flex-col lg:justify-between">
+            <div>
+              <p className="text-xs font-mono uppercase tracking-wider text-slate-500">Operator State</p>
+              <p className={cn("mt-2 text-2xl font-black", socketState === "Live" ? "text-emerald-300" : "text-amber-300")}>{socketState}</p>
+              <p className="mt-1 text-xs text-slate-500">Live events and manual refresh share the same student score source.</p>
+            </div>
+            <button
+              className="secondary-button mt-4 justify-center border-cyan-400/25 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/15"
+              type="button"
+              onClick={() => loadLiveData()}
+            >
+              <RefreshCw size={17} /> Refresh now
+            </button>
+          </div>
+        </div>
+      </section>
 
       {activeAlert && (
-        <div className="bg-red-955/40 border border-red-500/30 rounded-lg p-4 flex items-center justify-between gap-4 animate-bounce">
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-rose-400/25 bg-rose-500/10 p-4 shadow-lg shadow-rose-950/10" role="alert">
           <div className="flex items-center gap-3">
-            <div className="bg-red-500/20 p-2 rounded-full text-red-400">
+            <div className="grid h-10 w-10 place-items-center rounded-md border border-rose-400/25 bg-rose-400/10 text-rose-300">
               <ShieldX size={20} />
             </div>
             <div>
-              <p className="text-sm font-bold text-white uppercase tracking-wider">Critical Suspect Warning Raised</p>
-              <p className="text-xs text-red-300 font-mono">
-                Student <span className="font-bold underline">{activeAlert.student}</span> reached score of <span className="font-bold underline">{activeAlert.score}</span>: "{activeAlert.msg}"
+              <p className="text-sm font-bold text-white">Critical warning raised</p>
+              <p className="text-xs text-rose-200">
+                {activeAlert.student} reached {activeAlert.score}/100: {activeAlert.msg}
               </p>
             </div>
           </div>
           <button 
             type="button" 
             onClick={() => setActiveAlert(null)}
-            className="text-xs font-mono text-red-400 hover:text-white uppercase font-bold tracking-wider"
+            className="rounded border border-rose-400/30 px-3 py-1.5 text-xs font-bold text-rose-100 transition hover:bg-rose-400/10"
           >
             Acknowledge
           </button>
+        </div>
+      )}
+
+      {socketIssue && (
+        <div className="rounded-lg border border-amber-400/25 bg-amber-400/10 p-4 text-sm text-amber-100" role="status" aria-live="polite">
+          <p className="font-semibold">{socketState === "Reconnect pending" ? "Reconnecting to live events" : "Live event socket disconnected"}</p>
+          <p className="mt-1 text-amber-100/80">The last synchronized student list remains visible until live events reconnect.</p>
+        </div>
+      )}
+
+      {commandFeedback && (
+        <div
+          className={cn(
+            "rounded-lg border p-3 text-sm",
+            commandFeedback.tone === "success" ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-100" :
+              commandFeedback.tone === "danger" ? "border-rose-400/25 bg-rose-400/10 text-rose-100" :
+                "border-cyan-400/25 bg-cyan-400/10 text-cyan-100"
+          )}
+          role="status"
+          aria-live="polite"
+        >
+          {commandFeedback.message}
         </div>
       )}
 
@@ -424,38 +580,35 @@ export function LiveProctoringPage() {
 
       {exam && <AssignStudentsToExamPanel exam={exam} onExamUpdated={setExam} />}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard icon={Users} label="Active students" value={students.length} helper={`${analytics.online} online`} tone="primary" />
-        <MetricCard icon={AlertTriangle} label="Suspicious" value={analytics.suspicious} helper={`${analytics.warning} warnings`} tone="danger" />
-        <MetricCard icon={Activity} label="Avg suspicion" value={`${analytics.average}/100`} tone={analytics.average >= 70 ? "danger" : analytics.average >= 40 ? "warning" : "success"} />
-        <MetricCard icon={Radio} label="Alerts/min" value={analytics.alertsPerMinute} tone="warning" />
-        <MetricCard icon={ShieldCheck} label="Integrity Score" value={`${analytics.integrity}%`} tone="success" />
-        <MetricCard icon={ShieldX} label="Offline" value={students.length - analytics.online} tone="neutral" />
-      </section>
+      {!loading && !error && !data && (
+        <EmptyState icon={Radio} title="No active exam selected" description="Open an exam's live view to monitor connected students." />
+      )}
 
-      <section className="grid gap-6 xl:grid-cols-[1fr_390px]">
-        <Card className="overflow-hidden bg-slate-900 border-slate-800">
-          <div className="border-b border-slate-800 p-4 bg-slate-900/50">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-white tracking-wider flex items-center gap-2">
-                  <Eye size={18} className="text-violet-400" />
+      <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
+        <Card className="overflow-hidden rounded-lg border-slate-800 bg-slate-950">
+          <div className="border-b border-slate-800 bg-slate-900/70 p-4">
+            <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_auto] 2xl:items-center">
+              <div className="min-w-0">
+                <h2 className="flex items-center gap-2 text-lg font-black tracking-tight text-white">
+                  <Eye size={18} className="text-cyan-300" />
                   Student Stream Grid
                 </h2>
-                <p className="text-xs text-slate-400">Sorts suspicious students with highest scores first.</p>
+                <p className="text-xs text-slate-400">Sorted by live suspicion score, highest risk first.</p>
               </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <div className="relative">
+              <div className="grid gap-2 sm:grid-cols-[minmax(220px,280px)_auto] sm:items-center">
+                <div className="relative min-w-0">
                   <Eye className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <input className="field-input bg-slate-955 border-slate-800 text-slate-202 text-xs pl-9 sm:w-64 focus:border-violet-505" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name or ID..." />
+                  <label className="sr-only" htmlFor="student-search">Search students</label>
+                  <input id="student-search" className="field-input h-9 w-full bg-slate-950 border-slate-800 text-slate-202 text-xs pl-9 focus:border-cyan-400" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name or ID..." />
                 </div>
-                <div className="inline-flex rounded-md border border-slate-800 bg-slate-950 p-1">
+                <div className="grid grid-cols-4 rounded-md border border-slate-800 bg-slate-950 p-1" role="group" aria-label="Filter students by status">
                   {(["ALL", "SAFE", "WARNING", "SUSPICIOUS"] as FilterState[]).map((item) => (
                     <button
-                      className={cn("rounded px-3 py-1.5 text-xs font-semibold tracking-wider uppercase transition", filter === item ? "bg-violet-600 text-white shadow-md" : "text-slate-400 hover:text-slate-202 hover:bg-slate-800")}
+                      className={cn("h-7 rounded px-2 text-[10px] font-bold uppercase tracking-wide transition", filter === item ? "bg-cyan-500 text-slate-950 shadow-md" : "text-slate-400 hover:text-slate-202 hover:bg-slate-800")}
                       key={item}
                       type="button"
                       onClick={() => setFilter(item)}
+                      aria-pressed={filter === item}
                     >
                       {item === "ALL" ? "All" : item.toLowerCase()}
                     </button>
@@ -465,15 +618,40 @@ export function LiveProctoringPage() {
             </div>
           </div>
 
-          <div className="bg-slate-900 overflow-hidden min-h-[600px] border border-slate-800 rounded-b-lg">
+          <div className="border-b border-slate-800 bg-slate-950/80 p-4">
+            <div className="grid gap-3 text-xs md:grid-cols-3">
+              <div className="min-h-14 rounded-md border border-slate-800 bg-slate-900/55 px-3 py-2">
+                <p className="font-mono uppercase tracking-wider text-slate-500">Showing</p>
+                <p className="mt-1 font-bold text-white">{visibleStudents.length} of {students.length} students</p>
+              </div>
+              <div className="min-h-14 rounded-md border border-slate-800 bg-slate-900/55 px-3 py-2">
+                <p className="font-mono uppercase tracking-wider text-slate-500">Priority</p>
+                <p className={cn("mt-1 truncate font-bold", topRiskScore >= 70 ? "text-red-300" : topRiskScore >= 40 ? "text-amber-300" : "text-emerald-300")}>
+                  {topRiskStudent ? `${topRiskStudent.studentName || topRiskStudent.studentId} · ${topRiskScore}%` : "No live scores"}
+                </p>
+              </div>
+              <div className="min-h-14 rounded-md border border-slate-800 bg-slate-900/55 px-3 py-2">
+                <p className="font-mono uppercase tracking-wider text-slate-500">Ordering</p>
+                <p className="mt-1 font-bold text-slate-200">Suspicious &gt; Warning &gt; Safe</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-[640px] overflow-hidden bg-slate-950">
             {loading && Array.from({ length: 6 }).map((_, index) => <SkeletonBlock className="h-44 bg-slate-800 m-4" key={index} />)}
             {!loading && visibleStudents.length > 0 && (
               <VirtualGrid
                 items={visibleStudents}
-                itemHeight={260}
-                renderItem={(student) => (
+                itemHeight={292}
+                height={640}
+                minColumnWidth={286}
+                gap={16}
+                padding={16}
+                keyExtractor={(student) => student.studentId}
+                renderItem={(student, index) => (
                   <StudentTile
                     student={student}
+                    rank={index + 1}
                     selected={selectedStudent?.studentId === student.studentId}
                     onSelect={setSelectedStudent}
                     onOpen={setFullscreenStudent}
@@ -481,15 +659,20 @@ export function LiveProctoringPage() {
                 )}
               />
             )}
-            {!loading && visibleStudents.length === 0 && (
+            {!loading && students.length === 0 && (
               <div className="p-8">
-                <EmptyState icon={UserRound} title="No students match filters" description="No student sessions matched active status logs." />
+                <EmptyState icon={UserRound} title="No connected students" description="Students will appear here after they enter the exam and establish a live session." />
+              </div>
+            )}
+            {!loading && students.length > 0 && visibleStudents.length === 0 && (
+              <div className="p-8">
+                <EmptyState icon={UserRound} title="No students match filters" description="Clear search or status filters to return to the active session list." />
               </div>
             )}
           </div>
         </Card>
 
-        <aside className="space-y-6">
+        <aside className="space-y-5 xl:sticky xl:top-5 xl:self-start">
           <StudentDetail 
             student={selectedStudent} 
             detailTab={detailTab}
@@ -503,18 +686,20 @@ export function LiveProctoringPage() {
             onSendCommand={sendCommand}
             onSaveReview={handleSaveReview}
             onOpen={setFullscreenStudent} 
+            pendingCommandKey={pendingCommandKey}
+            commandFeedback={commandFeedback?.message || ""}
           />
         </aside>
       </section>
 
-      <section className="grid gap-6 md:grid-cols-[380px_1fr]">
-        <Card className="p-5 bg-slate-900 border-slate-800">
-          <h2 className="text-base font-bold text-white tracking-wider flex items-center gap-2">
-            <Activity size={16} className="text-violet-400" />
-            Risk Distribution
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">Live active student risk curve.</p>
-          <div className="mt-6 h-48">
+      <section className="grid gap-5 lg:grid-cols-[420px_minmax(0,1fr)]">
+        <Card className="overflow-hidden rounded-lg border-slate-800 bg-slate-950">
+          <PanelHeader
+            icon={Activity}
+            title="Risk Distribution"
+            description="Highest current student scores."
+          />
+          <div className="h-56 p-4">
             {chartData.length ? (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData}>
@@ -526,7 +711,7 @@ export function LiveProctoringPage() {
                   </defs>
                   <XAxis dataKey="name" stroke="#64748b" tickLine={false} axisLine={false} style={{ fontSize: "10px" }} />
                   <YAxis domain={[0, 100]} stroke="#64748b" tickLine={false} axisLine={false} width={25} style={{ fontSize: "10px" }} />
-                  <Tooltip contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", color: "#f8fafc" }} />
+                  <Tooltip contentStyle={{ backgroundColor: "#020617", border: "1px solid #334155", borderRadius: "8px", color: "#f8fafc" }} />
                   <Area dataKey="score" stroke="#ef4444" fill="url(#risk)" strokeWidth={2} />
                 </AreaChart>
               </ResponsiveContainer>
@@ -536,21 +721,23 @@ export function LiveProctoringPage() {
           </div>
         </Card>
 
-        <Card className="p-5 bg-slate-900 border-slate-800 flex flex-col gap-4">
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-3">
-            <div>
-              <h2 className="text-base font-bold text-white tracking-wider flex items-center gap-2">
-                <FileText size={16} className="text-violet-400" />
-                Filterable Violation Timeline Log
-              </h2>
-              <p className="text-xs text-slate-400">Search proctoring timeline entries in real-time.</p>
-            </div>
-            
+        <Card className="flex flex-col overflow-hidden rounded-lg border-slate-800 bg-slate-950">
+          <div className="border-b border-slate-800 bg-slate-900/70 p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="flex items-center gap-2 text-base font-black text-white">
+                  <FileText size={16} className="text-cyan-300" />
+                  Violation Timeline
+                </h2>
+                <p className="text-xs text-slate-400">Recent alerts from the active session cache.</p>
+              </div>
             <div className="flex flex-wrap gap-2">
+              <label className="sr-only" htmlFor="timeline-student-filter">Filter timeline by student</label>
               <select 
+                id="timeline-student-filter"
                 value={timelineStudentFilter} 
                 onChange={(e) => setTimelineStudentFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded px-2.5 py-1.5 focus:border-violet-505"
+                className="rounded border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-300 focus:border-cyan-400"
               >
                 <option value="ALL">All Students</option>
                 {students.map((student) => (
@@ -559,28 +746,31 @@ export function LiveProctoringPage() {
                   </option>
                 ))}
               </select>
+              <label className="sr-only" htmlFor="timeline-severity-filter">Filter timeline by severity</label>
               <select 
+                id="timeline-severity-filter"
                 value={timelineSeverityFilter} 
                 onChange={(e) => setTimelineSeverityFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded px-2.5 py-1.5 focus:border-violet-505"
+                className="rounded border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-300 focus:border-cyan-400"
               >
                 <option value="ALL">All Severities</option>
                 <option value="HIGH">High Severity</option>
                 <option value="MEDIUM">Medium Severity</option>
                 <option value="LOW">Low Severity</option>
               </select>
+              </div>
             </div>
           </div>
 
-          <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+          <div className="max-h-80 space-y-2 overflow-y-auto p-4">
             {filteredTimelineAlerts.map((item) => (
               <div 
                 className={cn(
-                  "p-3 rounded border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition",
-                  item.severity === "high" 
-                    ? "bg-red-955/20 border-red-500/20" 
-                    : item.severity === "medium" 
-                      ? "bg-amber-955/20 border-amber-500/20" 
+                  "flex flex-col justify-between gap-3 rounded border p-3 text-xs transition sm:flex-row sm:items-center",
+                  item.severity === "high"
+                    ? "border-rose-500/20 bg-rose-500/10"
+                    : item.severity === "medium"
+                      ? "border-amber-500/20 bg-amber-500/10"
                       : "bg-slate-950 border-slate-800 text-slate-300"
                 )} 
                 key={item.id}
@@ -603,33 +793,37 @@ export function LiveProctoringPage() {
               </div>
             ))}
             {filteredTimelineAlerts.length === 0 && (
-              <p className="py-8 text-center text-xs text-slate-500 font-mono">No matching timeline alerts found in active session cache.</p>
+              <div className="grid min-h-40 place-items-center rounded border border-dashed border-slate-800 text-center">
+                <p className="text-xs font-mono text-slate-500">No matching timeline alerts in the active session cache.</p>
+              </div>
             )}
           </div>
         </Card>
       </section>
 
-      <Card className="p-5 bg-slate-900 border-slate-800">
-        <div className="mb-4 flex flex-col gap-1">
-          <h2 className="text-sm font-bold text-white tracking-widest uppercase font-mono flex items-center gap-2">
-            <Radio size={14} className="text-amber-400" />
-            Live proctor event simulator
-          </h2>
-          <p className="text-xs text-slate-400">Trigger test alerts and suspicion states in the Socket.IO room.</p>
-        </div>
-        <div className="grid gap-3 md:grid-cols-4">
-          <label className="block"><span className="field-label text-slate-400 font-mono text-xs">Student ID</span><input className="field-input bg-slate-955 border-slate-800 text-slate-202" value={testStudentId} onChange={(event) => setTestStudentId(event.target.value)} /></label>
-          <label className="block"><span className="field-label text-slate-400 font-mono text-xs">Student name</span><input className="field-input bg-slate-955 border-slate-800 text-slate-202" value={testStudentName} onChange={(event) => setTestStudentName(event.target.value)} /></label>
-          <label className="block"><span className="field-label text-slate-400 font-mono text-xs">Suspicion score</span><input className="field-input bg-slate-955 border-slate-800 text-slate-202" max={100} min={0} type="number" value={testScore} onChange={(event) => setTestScore(Number(event.target.value))} /></label>
-          <label className="block"><span className="field-label text-slate-400 font-mono text-xs">Alert</span><input className="field-input bg-slate-955 border-slate-800 text-slate-202" value={testAlert} onChange={(event) => setTestAlert(event.target.value)} /></label>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 transition" disabled={testBusy} type="button" onClick={() => runTestEvent("student_joined_exam")}>Simulate joined</button>
-          <button className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 transition" disabled={testBusy} type="button" onClick={() => runTestEvent("suspicion_score_updated")}>Set score</button>
-          <button className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 transition" disabled={testBusy} type="button" onClick={() => runTestEvent("ai_alert_created")}>Create alert</button>
-          <button className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 transition" disabled={testBusy} type="button" onClick={() => runTestEvent("student_left_exam")}>Set offline</button>
-        </div>
-      </Card>
+      {ENABLE_PROCTORING_TEST_TOOLS && (
+        <Card className="p-5 bg-slate-900 border-slate-800">
+          <div className="mb-4 flex flex-col gap-1">
+            <h2 className="text-sm font-bold text-white tracking-widest uppercase font-mono flex items-center gap-2">
+              <Radio size={14} className="text-amber-400" />
+              Live proctor event simulator
+            </h2>
+            <p className="text-xs text-slate-400">Trigger test alerts and suspicion states in the Socket.IO room.</p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-4">
+            <label className="block"><span className="field-label text-slate-400 font-mono text-xs">Student ID</span><input className="field-input bg-slate-955 border-slate-800 text-slate-202" value={testStudentId} onChange={(event) => setTestStudentId(event.target.value)} /></label>
+            <label className="block"><span className="field-label text-slate-400 font-mono text-xs">Student name</span><input className="field-input bg-slate-955 border-slate-800 text-slate-202" value={testStudentName} onChange={(event) => setTestStudentName(event.target.value)} /></label>
+            <label className="block"><span className="field-label text-slate-400 font-mono text-xs">Suspicion score</span><input className="field-input bg-slate-955 border-slate-800 text-slate-202" max={100} min={0} type="number" value={testScore} onChange={(event) => setTestScore(Number(event.target.value))} /></label>
+            <label className="block"><span className="field-label text-slate-400 font-mono text-xs">Alert</span><input className="field-input bg-slate-955 border-slate-800 text-slate-202" value={testAlert} onChange={(event) => setTestAlert(event.target.value)} /></label>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 transition" disabled={testBusy} type="button" onClick={() => runTestEvent("student_joined_exam")}>Simulate joined</button>
+            <button className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 transition" disabled={testBusy} type="button" onClick={() => runTestEvent("suspicion_score_updated")}>Set score</button>
+            <button className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 transition" disabled={testBusy} type="button" onClick={() => runTestEvent("ai_alert_created")}>Create alert</button>
+            <button className="secondary-button bg-slate-950 border-slate-800 hover:bg-slate-800 transition" disabled={testBusy} type="button" onClick={() => runTestEvent("student_left_exam")}>Set offline</button>
+          </div>
+        </Card>
+      )}
 
       <Dialog open={Boolean(fullscreenStudent)} onClose={() => setFullscreenStudent(null)} title={fullscreenStudent?.studentName || "Student Monitor"}>
         {fullscreenStudent && (
@@ -651,4 +845,68 @@ function shortName(value: string) {
 function readErrorMessage(error: unknown, fallback: string) {
   const message = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
   return message || (error instanceof Error ? error.message : fallback);
+}
+
+function LiveStatCard({
+  icon: Icon,
+  label,
+  value,
+  helper,
+  tone,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: number | string;
+  helper: string;
+  tone: "cyan" | "emerald" | "amber" | "rose";
+}) {
+  const toneClass = {
+    cyan: "border-cyan-400/20 bg-cyan-400/10 text-cyan-200",
+    emerald: "border-emerald-400/20 bg-emerald-400/10 text-emerald-200",
+    amber: "border-amber-400/20 bg-amber-400/10 text-amber-200",
+    rose: "border-rose-400/20 bg-rose-400/10 text-rose-200",
+  }[tone];
+
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/75 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">{label}</p>
+          <p className="mt-1 text-2xl font-black tracking-tight text-white">{value}</p>
+          <p className="mt-1 text-xs text-slate-500">{helper}</p>
+        </div>
+        <div className={cn("grid h-9 w-9 shrink-0 place-items-center rounded border", toneClass)}>
+          <Icon size={17} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PanelHeader({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="border-b border-slate-800 bg-slate-900/70 p-4">
+      <h2 className="flex items-center gap-2 text-base font-black text-white">
+        <Icon size={16} className="text-cyan-300" />
+        {title}
+      </h2>
+      <p className="mt-1 text-xs text-slate-400">{description}</p>
+    </div>
+  );
+}
+
+function commandLabel(command: string) {
+  return command
+    .toLowerCase()
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }

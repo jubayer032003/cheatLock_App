@@ -73,11 +73,10 @@ export function SuspicionProvider({ children }: { children: React.ReactNode }) {
 
       // 4. REST DB submission tracking
       try {
-        const submissionPayload = {
+        const warningPayload = {
           examId,
           studentId: user.identifier,
-          answers: [],
-          appSwitchWarnings: eventType === "WINDOW_BLURRED" ? 1 : 0,
+          appSwitchWarnings: (eventType === "WINDOW_BLURRED" || eventType === "FOCUS_LOSS") ? 1 : 0,
           faceMissingWarnings: eventType === "FACE_MISSING" ? 1 : 0,
           audioWarnings: eventType === "VOICE_DETECTED" ? 1 : 0,
           phoneWarnings: eventType === "PHONE_DETECTED" ? 1 : 0,
@@ -85,27 +84,28 @@ export function SuspicionProvider({ children }: { children: React.ReactNode }) {
           riskLevel: (newRisk === "Critical Risk" || newRisk === "High Risk" ? "High Risk" : "Medium Risk") as "High Risk" | "Medium Risk" | "Low Risk",
           submittedAt: Date.now(),
         };
-        await SessionService.saveSubmission(submissionPayload).catch(() => {});
+        await SessionService.saveWarnings(warningPayload).catch(() => {});
       } catch {}
 
       // 5. Socket.IO proctor alerting
       try {
         const socket = SocketService.getInstance();
+        const eventId = `${user.identifier}-${examId}-${violation.timestamp}-${crypto.randomUUID()}`;
         socket.emit("ai_alert_created", {
           examId,
           studentId: user.identifier,
           studentName: user.name,
           eventType,
-          suspicionScore: violation.scoreChange,
+          ruleId: eventType,
+          scoreDelta: violation.scoreChange,
+          mutationId: eventId,
+          eventId,
+          totalSuspicionScore: newScore,
+          occurredAt: new Date(violation.timestamp).toISOString(),
           alertMessage: `Suspicion Engine: ${reason}`,
-          severity: violation.severity,
+          severity: normalizeSeverity(violation.severity),
         }).catch(() => {});
 
-        socket.emit("suspicion_score_updated", {
-          examId,
-          studentId: user.identifier,
-          suspicionScore: newScore,
-        }).catch(() => {});
       } catch {}
     },
     [user, showToast]
@@ -128,15 +128,6 @@ export function SuspicionProvider({ children }: { children: React.ReactNode }) {
       setSuspicionScore(newScore);
       setRiskLevel(suspicionScoreEngine.getRiskLevel());
       setModuleContributions(suspicionScoreEngine.getExplanations());
-
-      const examId = examIdRef.current;
-      if (examId && user) {
-        SocketService.getInstance().emit("suspicion_score_updated", {
-          examId,
-          studentId: user.identifier,
-          suspicionScore: newScore,
-        }).catch(() => {});
-      }
     }, 1000);
   }, [user]);
 
@@ -179,6 +170,10 @@ export function SuspicionProvider({ children }: { children: React.ReactNode }) {
       {children}
     </SuspicionContext.Provider>
   );
+}
+
+function normalizeSeverity(severity: "low" | "medium" | "high" | "critical"): "low" | "medium" | "high" {
+  return severity === "critical" ? "high" : severity;
 }
 
 export function useSuspicion() {

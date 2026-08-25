@@ -146,6 +146,7 @@ sessionsRouter.post(
       session.deviceId = "";
       session.previewUrl = "";
       session.previewBase64 = "";
+      session.screenBase64 = "";
       session.lastPreviewEventLoggedAt = undefined;
       await session.save();
       await broadcastSessionState(req.app.get("io"), "student_left_exam", exam, session);

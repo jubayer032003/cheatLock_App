@@ -64,6 +64,10 @@ export class ImageProcessor {
         ctx.drawImage(source, 0, 0, srcW, srcH, 0, 0, dstW, dstH);
 
         // Export compression to Blob / base64
+        const outputFormat = preferredFormat === "image/webp" && !supportsWebpCanvasExport()
+          ? "image/jpeg"
+          : preferredFormat;
+
         canvas.toBlob(
           (blob) => {
             if (!blob) {
@@ -80,7 +84,7 @@ export class ImageProcessor {
                 sizeBytes: blob.size,
                 width: dstW,
                 height: dstH,
-                mimeType: preferredFormat,
+                mimeType: blob.type || outputFormat,
               });
             };
             reader.onerror = () => {
@@ -88,7 +92,7 @@ export class ImageProcessor {
             };
             reader.readAsDataURL(blob);
           },
-          preferredFormat,
+          outputFormat,
           quality
         );
       } catch (err) {
@@ -96,4 +100,11 @@ export class ImageProcessor {
       }
     });
   }
+}
+
+function supportsWebpCanvasExport() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  return canvas.toDataURL("image/webp").startsWith("data:image/webp");
 }

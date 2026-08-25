@@ -1,5 +1,25 @@
-export type UserRole = "STUDENT" | "TEACHER";
-export type QuestionType = "MCQ" | "CQ";
+export type UserRole =
+  | "SUPER_ADMIN"
+  | "INSTITUTION_ADMIN"
+  | "DEPARTMENT_ADMIN"
+  | "TEACHER"
+  | "PROCTOR"
+  | "STUDENT"
+  | "OBSERVER"
+  | "AUDITOR";
+export type QuestionType =
+  | "MCQ"
+  | "MULTI_SELECT"
+  | "CQ"
+  | "MATH"
+  | "CODE"
+  | "TRUE_FALSE"
+  | "FILL_BLANK"
+  | "MATCHING"
+  | "ORDERING"
+  | "CASE_STUDY"
+  | "FILE_UPLOAD"
+  | "IMAGE";
 export type StudentStatus = "SAFE" | "WARNING" | "SUSPICIOUS";
 export type OnlineStatus = "ONLINE" | "OFFLINE";
 export type ExamStatus = "DRAFT" | "SCHEDULED" | "LIVE" | "ENDED" | "ARCHIVED";
@@ -15,11 +35,95 @@ export interface LoginResponse {
   user: AuthUser;
 }
 
+export interface QuestionBankClass {
+  id: string;
+  name: string;
+  slug: string;
+  displayOrder: number;
+  isActive: boolean;
+}
+
+export interface QuestionBankSubject {
+  id: string;
+  classId: string;
+  name: string;
+  slug: string;
+  code?: string;
+  displayOrder: number;
+  isActive: boolean;
+}
+
+export interface QuestionBankChapter {
+  id: string;
+  subjectId: string;
+  name: string;
+  slug: string;
+  chapterNumber?: number | null;
+  displayOrder: number;
+  isActive: boolean;
+}
+
+export interface QuestionBankOption {
+  id?: string;
+  text: string;
+  displayOrder?: number;
+  isCorrect?: boolean;
+}
+
+export interface QuestionBankQuestion {
+  id: string;
+  classId: string;
+  subjectId: string;
+  chapterId?: string | null;
+  questionType: "mcq" | "true_false" | "short_answer";
+  questionText: string;
+  difficulty: "easy" | "medium" | "hard";
+  marks: number;
+  explanation?: string;
+  source?: string;
+  status: "draft" | "active" | "inactive";
+  options: QuestionBankOption[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface QuestionBankSearchResult {
+  questions: QuestionBankQuestion[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
+export interface QuestionBankSearchFilters {
+  classId?: string;
+  subjectId?: string;
+  chapterId?: string;
+  difficulty?: "easy" | "medium" | "hard";
+  questionType?: "mcq" | "true_false" | "short_answer";
+  search?: string;
+  page?: number;
+  limit?: number;
+}
+
 export interface ExamQuestion {
+  id?: string;
   type?: QuestionType;
   text: string;
   options?: string[];
   correctAnswer?: string;
+  marks?: number;
+  difficulty?: "easy" | "medium" | "hard";
+  subject?: string;
+  chapter?: string;
+  estimatedMinutes?: number;
+  required?: boolean;
+  negativeMarking?: number;
+  shuffleOptions?: boolean;
+  tags?: string[];
+  teacherNotes?: string;
+  explanation?: string;
+  mediaUrl?: string;
+  data?: Record<string, unknown>;
 }
 
 export interface Exam {
@@ -163,15 +267,21 @@ export interface ExamAttendanceOverview {
 }
 
 export interface LiveStudent {
+  sessionId?: string;
   studentId: string;
   studentName: string;
   rollId: string;
   status: StudentStatus;
   suspicionScore: number;
+  eventId?: string;
+  mutationId?: string;
+  scoreDelta?: number;
+  scoreMetrics?: ScoreMetrics;
   latestAlert: string;
   onlineStatus: OnlineStatus;
   previewUrl?: string;
   previewBase64?: string;
+  screenPreviewUrl?: string;
   lastUpdatedAt?: number | string | null;
   lastSeenAt?: number | string | null;
   screenBase64?: string;
@@ -185,6 +295,17 @@ export interface LiveStudent {
   violationsList?: Array<{ type: string; message: string; timestamp: number }>;
 }
 
+export interface ScoreMetrics {
+  rawScore: number;
+  maximumScore: number;
+  percentage: number;
+  trustScore: number;
+  suspiciousActivityCount: number;
+  capturedFrameCount: number;
+  processedFrameCount: number;
+  updatedAt: string;
+}
+
 export interface LiveStudentListEvent {
   examId: string;
   students: LiveStudent[];
@@ -196,13 +317,20 @@ export type ProctoringTestEventName =
   | "suspicion_score_updated"
   | "ai_alert_created"
   | "camera_preview_updated"
-  | "screen_telemetry_uploaded";
+  | "screen_telemetry_uploaded"
+  | "student_heartbeat";
 
 export interface ProctoringTestEventRequest {
   eventName: ProctoringTestEventName;
   studentId: string;
   studentName?: string;
   suspicionScore?: number;
+  scoreDelta?: number;
+  totalSuspicionScore?: number;
+  ruleId?: string;
+  occurredAt?: string;
+  evidenceReference?: string;
+  mutationId?: string;
   latestAlert?: string;
   previewUrl?: string;
   previewBase64?: string;
@@ -224,9 +352,22 @@ export interface TimelineEvent {
   timestamp: string;
   alertMessage: string;
   suspicionScore: number;
+  scoreMetrics?: ScoreMetrics;
+  scoreDelta?: number;
+  totalSuspicionScore?: number;
+  ruleId?: string;
+  occurredAt?: string;
+  evidenceReference?: string;
   severity: ReplaySeverity;
   previewUrl?: string;
   previewBase64?: string;
+  confidence?: number | null;
+  evidenceId?: string;
+  evidenceIds?: string[];
+  sequenceNumber?: number;
+  sessionId?: string;
+  captureTiming?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ProctoringTimelineResponse {
@@ -241,6 +382,7 @@ export interface ProctoringTimelineResponse {
     status: ExamSessionStatus;
   };
   finalSuspicionScore: number;
+  scoreMetrics?: ScoreMetrics;
   review?: {
     decision: IntegrityDecision;
     notes: string;
@@ -281,6 +423,18 @@ export interface IntegrityStudentReport {
   latestAlert: string;
   lastUpdatedAt?: string | null;
   breakdown: IntegrityBreakdown;
+  evidenceSamples?: Array<{
+    id: string;
+    eventType: string;
+    captureKind?: "camera" | "screen";
+    captureLabel?: string;
+    severity: ReplaySeverity;
+    alertMessage: string;
+    suspicionScore: number;
+    capturedAt: string;
+    imageUrl?: string;
+    inlineImage?: string;
+  }>;
   review: IntegrityReview;
 }
 
@@ -296,6 +450,9 @@ export interface IntegrityReportResponse {
     safeStudents: number;
     warningStudents: number;
     suspiciousStudents: number;
+    highRiskCount?: number;
+    suspiciousAlertsTotal?: number;
+    averageSuspicionScore?: number;
     highestRiskMoments: Array<{
       studentId: string;
       studentName: string;

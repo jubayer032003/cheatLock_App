@@ -40,6 +40,7 @@ import androidx.compose.material3.HorizontalDivider
 import com.jubayer.cheatlock.ui.theme.*
 import androidx.compose.runtime.getValue
 import com.jubayer.cheatlock.model.StudentAnswer
+import com.jubayer.cheatlock.util.SuspicionScoreCalculator
 import com.jubayer.cheatlock.ui.theme.CheatLockAccent
 import com.jubayer.cheatlock.ui.theme.CheatLockGradientEnd
 import com.jubayer.cheatlock.ui.theme.CheatLockGradientStart
@@ -55,19 +56,21 @@ fun ResultScreen(
     faceMissingWarnings: Int,
     audioWarnings: Int = 0,
     phoneWarnings: Int = 0,
+    authoritativeSuspicionScore: Int? = null,
     grade: Double? = null,
     feedback: String? = null,
     gradedAt: String? = null,
     answers: List<StudentAnswer>,
     onBackToLogin: () -> Unit
 ) {
-    val totalWarnings = appSwitchWarnings + faceMissingWarnings + audioWarnings + phoneWarnings
-    val riskLevel = when {
-        totalWarnings >= 5 -> "High Risk"
-        totalWarnings >= 3 -> "Medium Risk"
-        else -> "Low Risk"
-    }
-    val integrityScore = (totalWarnings * 20).coerceIn(0, 100)
+    val locallyCalculatedScore = SuspicionScoreCalculator.calculateScore(
+        appSwitchWarnings = appSwitchWarnings,
+        faceMissingWarnings = faceMissingWarnings,
+        audioWarnings = audioWarnings,
+        phoneWarnings = phoneWarnings,
+    )
+    val integrityScore = authoritativeSuspicionScore ?: locallyCalculatedScore
+    val riskLevel = SuspicionScoreCalculator.riskLevel(integrityScore)
 
     PremiumScreen(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -202,9 +205,6 @@ private fun ResultHero(riskLevel: String, grade: Double? = null) {
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Background Decorative Circles
-        Box(Modifier.size(180.dp).clip(CircleShape).background(CheatLockPurpleVibrant.copy(alpha = 0.05f * glowAlpha)))
-        Box(Modifier.size(120.dp).clip(CircleShape).background(CheatLockPurpleVibrant.copy(alpha = 0.1f * glowAlpha)))
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Box(

@@ -1,23 +1,39 @@
-import { useState, useEffect } from "react";
+import { Suspense, lazy, useState, useEffect } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { ProtectedRoute } from "./components/ProtectedRoute";
-import { ExamDetailsPage } from "./pages/ExamDetailsPage";
-import { ExamListPage } from "./pages/ExamListPage";
-import { AttendancePage } from "./pages/AttendancePage";
-import { CommunityPage } from "./pages/CommunityPage";
-import { ClassesPage } from "./pages/ClassesPage";
-import { LiveProctoringPage } from "./pages/LiveProctoringPage";
 import { LoginPage } from "./pages/LoginPage";
-import { ReportsPage } from "./pages/ReportsPage";
-import { ReplayTimelinePage } from "./pages/ReplayTimelinePage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { TeacherHomePage } from "./pages/TeacherHomePage";
-import { ModelDataCardPage } from "./pages/ModelDataCardPage";
-import { InstitutionManagementPage } from "./pages/InstitutionManagementPage";
-import { UserManagementPage } from "./pages/UserManagementPage";
-import { AuditLogsPage } from "./pages/AuditLogsPage";
-import { ShieldCheck } from "lucide-react";
+import { getAuthUser, hasPermission } from "./lib/auth";
+
+const TeacherHomePage = lazy(() => import("./pages/TeacherHomePage").then((module) => ({ default: module.TeacherHomePage })));
+const ExamListPage = lazy(() => import("./pages/ExamListPage").then((module) => ({ default: module.ExamListPage })));
+const ExamDetailsPage = lazy(() => import("./pages/ExamDetailsPage").then((module) => ({ default: module.ExamDetailsPage })));
+const AttendancePage = lazy(() => import("./pages/AttendancePage").then((module) => ({ default: module.AttendancePage })));
+const CommunityPage = lazy(() => import("./pages/CommunityPage").then((module) => ({ default: module.CommunityPage })));
+const ClassesPage = lazy(() => import("./pages/ClassesPage").then((module) => ({ default: module.ClassesPage })));
+const LiveProctoringPage = lazy(() => import("./pages/LiveProctoringPage").then((module) => ({ default: module.LiveProctoringPage })));
+const ReportsPage = lazy(() => import("./pages/ReportsPage").then((module) => ({ default: module.ReportsPage })));
+const ReplayTimelinePage = lazy(() => import("./pages/ReplayTimelinePage").then((module) => ({ default: module.ReplayTimelinePage })));
+const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
+const ModelDataCardPage = lazy(() => import("./pages/ModelDataCardPage").then((module) => ({ default: module.ModelDataCardPage })));
+const InstitutionManagementPage = lazy(() => import("./pages/InstitutionManagementPage").then((module) => ({ default: module.InstitutionManagementPage })));
+const UserManagementPage = lazy(() => import("./pages/UserManagementPage").then((module) => ({ default: module.UserManagementPage })));
+const AuditLogsPage = lazy(() => import("./pages/AuditLogsPage").then((module) => ({ default: module.AuditLogsPage })));
+const ENABLE_MODEL_DATA_PAGE = import.meta.env.VITE_ENABLE_MODEL_DATA_PAGE === "true";
+const ENABLE_SETTINGS_PAGE = import.meta.env.VITE_ENABLE_SETTINGS_PAGE === "true";
+
+interface PermissionRouteProps {
+  children: React.ReactNode;
+  permission: string;
+}
+
+function PermissionRoute({ children, permission }: PermissionRouteProps) {
+  const user = getAuthUser();
+  if (!user || !hasPermission(user.role, permission)) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
 
 export default function App() {
   const [transitionState, setTransitionState] = useState<"IDLE" | "SWEEPING" | "OPENING">("IDLE");
@@ -27,6 +43,13 @@ export default function App() {
     const handleLoginSuccess = (e: Event) => {
       const customEvent = e as CustomEvent<{ nextPath: string }>;
       const nextPath = customEvent.detail?.nextPath || "/";
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+
+      if (reduceMotion) {
+        navigate(nextPath, { replace: true });
+        setTransitionState("IDLE");
+        return;
+      }
 
       // Instantly close doors and play welcome text/laser sweep
       setTransitionState("SWEEPING");
@@ -61,28 +84,40 @@ export default function App() {
     <>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route
-          path="/"
-          element={
-            <ProtectedRoute>
-              <AppShell />
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <AppShell />
             </ProtectedRoute>
-          }
-        >
-          <Route index element={<TeacherHomePage />} />
-          <Route path="exams" element={<ExamListPage />} />
-          <Route path="exams/:examId" element={<ExamDetailsPage />} />
-          <Route path="exams/:examId/attendance" element={<AttendancePage />} />
-          <Route path="exams/:examId/live" element={<LiveProctoringPage />} />
-          <Route path="exams/:examId/replay" element={<ReplayTimelinePage />} />
-          <Route path="community" element={<CommunityPage />} />
-          <Route path="classes" element={<ClassesPage />} />
-          <Route path="reports" element={<ReportsPage />} />
-          <Route path="settings" element={<SettingsPage />} />
-          <Route path="model-card" element={<ModelDataCardPage />} />
-          <Route path="institution" element={<InstitutionManagementPage />} />
-          <Route path="users" element={<UserManagementPage />} />
-          <Route path="audit-logs" element={<AuditLogsPage />} />
+            }
+          >
+          <Route index element={<RouteFallback><TeacherHomePage /></RouteFallback>} />
+          <Route path="exams" element={<RouteFallback><ExamListPage /></RouteFallback>} />
+          <Route path="exams/:examId" element={<RouteFallback><ExamDetailsPage /></RouteFallback>} />
+          <Route path="exams/:examId/attendance" element={<RouteFallback><AttendancePage /></RouteFallback>} />
+          <Route path="exams/:examId/live" element={<RouteFallback><LiveProctoringPage /></RouteFallback>} />
+          <Route path="exams/:examId/replay" element={<RouteFallback><ReplayTimelinePage /></RouteFallback>} />
+          <Route path="community" element={<RouteFallback><CommunityPage /></RouteFallback>} />
+          <Route path="classes" element={<RouteFallback><ClassesPage /></RouteFallback>} />
+          <Route path="reports" element={<RouteFallback><ReportsPage /></RouteFallback>} />
+          <Route path="settings" element={ENABLE_SETTINGS_PAGE ? <RouteFallback><SettingsPage /></RouteFallback> : <Navigate to="/" replace />} />
+          <Route path="model-card" element={ENABLE_MODEL_DATA_PAGE ? <RouteFallback><ModelDataCardPage /></RouteFallback> : <Navigate to="/" replace />} />
+          <Route path="institution" element={
+            <PermissionRoute permission="manage_settings">
+              <RouteFallback><InstitutionManagementPage /></RouteFallback>
+            </PermissionRoute>
+          } />
+          <Route path="users" element={
+            <PermissionRoute permission="manage_users">
+              <RouteFallback><UserManagementPage /></RouteFallback>
+            </PermissionRoute>
+          } />
+          <Route path="audit-logs" element={
+            <PermissionRoute permission="view_audit_logs">
+              <RouteFallback><AuditLogsPage /></RouteFallback>
+            </PermissionRoute>
+          } />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -128,6 +163,17 @@ export default function App() {
               40% { opacity: 0; }
               100% { opacity: 1; transform: translateY(0); }
             }
+            @media (prefers-reduced-motion: reduce) {
+              .door-left,
+              .door-right,
+              .animate-sweep,
+              .animate-reveal-text,
+              .animate-reveal-sub {
+                animation: none !important;
+                transition: none !important;
+                transform: none !important;
+              }
+            }
           `}</style>
 
           {/* Left Door */}
@@ -151,9 +197,9 @@ export default function App() {
             {/* Sweeping searchlight torch beam */}
             <div className="absolute top-0 bottom-0 w-[450px] bg-gradient-to-r from-transparent via-violet-500/25 to-transparent blur-3xl transform -skew-x-[25deg] animate-sweep pointer-events-none" />
             
-            {/* Shield Icon */}
-            <div className="h-16 w-16 rounded-2xl bg-violet-500/10 flex items-center justify-center text-violet-400 border border-violet-500/30 mb-6 shadow-[0_0_20px_rgba(139,92,246,0.3)] animate-pulse">
-              <ShieldCheck size={36} />
+            {/* Brand mark */}
+            <div className="h-16 w-16 overflow-hidden rounded-2xl bg-[#020617] flex items-center justify-center border border-violet-500/30 mb-6 shadow-[0_0_20px_rgba(139,92,246,0.3)] animate-pulse">
+              <img src="/cheatlock-logo.png" alt="CheatLock logo" className="h-full w-full object-cover" />
             </div>
             
             {/* Welcome Text */}
@@ -170,3 +216,20 @@ export default function App() {
   );
 }
 
+function RouteFallback({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="surface-card grid min-h-72 place-items-center p-6 text-center" role="status" aria-live="polite">
+          <div>
+            <div className="mx-auto mb-3 h-8 w-8 rounded-full border-2 border-cyan-400 border-t-transparent motion-safe:animate-spin" />
+            <p className="font-semibold text-slate-900 dark:text-white">Loading workspace</p>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Preparing this dashboard view.</p>
+          </div>
+        </div>
+      }
+    >
+      {children}
+    </Suspense>
+  );
+}

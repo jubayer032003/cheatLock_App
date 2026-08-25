@@ -67,10 +67,42 @@ const userSchema = new mongoose.Schema(
         default: null,
       },
     },
+    passwordResetTokenHash: {
+      type: String,
+      default: "",
+      select: false,
+    },
+    passwordResetExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    passwordResetRequestedAt: {
+      type: Date,
+      default: null,
+    },
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
+    },
+    passwordChangedAt: {
+      type: Date,
+      default: null,
+    },
+    tokenVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   { timestamps: true }
 );
 
 userSchema.index({ identifier: 1, role: 1 }, { unique: true });
+userSchema.index({ tenantId: 1, role: 1, status: 1 });
+userSchema.index(
+  { passwordResetTokenHash: 1, passwordResetExpiresAt: 1 },
+  { partialFilterExpression: { passwordResetTokenHash: { $type: "string", $gt: "" } } }
+);
 
 export const User = mongoose.model("User", userSchema);

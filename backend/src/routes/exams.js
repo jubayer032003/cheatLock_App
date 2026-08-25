@@ -1,5 +1,6 @@
 import express from "express";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { accessCodeRateLimiter } from "../middleware/rateLimiter.js";
 import { Exam } from "../models/Exam.js";
 import { ExamSession } from "../models/ExamSession.js";
 import { IntegrityReview } from "../models/IntegrityReview.js";
@@ -14,6 +15,13 @@ import {
 } from "../services/studentNotifications.js";
 
 export const examsRouter = express.Router();
+const EXAM_LIFECYCLE_TRANSITIONS = {
+  DRAFT: new Set(["SCHEDULE", "START"]),
+  SCHEDULED: new Set(["DRAFT", "START"]),
+  LIVE: new Set(["END"]),
+  ENDED: new Set(["ARCHIVE"]),
+  ARCHIVED: new Set(),
+};
 
 examsRouter.post("/", requireAuth, requireRole("TEACHER"), async (req, res, next) => {
   try {
@@ -77,6 +85,13 @@ examsRouter.patch("/:examId/lifecycle", requireAuth, requireRole("TEACHER"), asy
     }
 
     const action = String(req.body?.action || "").trim().toUpperCase();
+    const allowedActions = EXAM_LIFECYCLE_TRANSITIONS[exam.status || "DRAFT"] || new Set();
+    if (!allowedActions.has(action)) {
+      const error = new Error(`Cannot ${action.toLowerCase() || "change lifecycle"} an exam while it is ${exam.status || "DRAFT"}.`);
+      error.status = 409;
+      error.code = "INVALID_EXAM_LIFECYCLE_TRANSITION";
+      throw error;
+    }
     if (action === "SCHEDULE") {
       const startAt = parseDateOrNull(req.body?.scheduledStartAt);
       const endAt = parseDateOrNull(req.body?.scheduledEndAt);
@@ -160,7 +175,7 @@ examsRouter.get("/assigned", requireAuth, requireRole("STUDENT"), async (req, re
   }
 });
 
-examsRouter.get("/access/:code", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
+examsRouter.get("/access/:code", accessCodeRateLimiter, requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
     const exam = await Exam.findOne({
       accessCode: req.params.code.toUpperCase(),
@@ -316,14 +331,60 @@ function uniqueStudentIds(students) {
 function normalizeQuestions(questions) {
   return questions
     .map((question) => ({
-      type: question.type === "MCQ" ? "MCQ" : "CQ",
+      id: String(question.id || "").trim(),
+      type: normalizeQuestionType(question.type),
       text: String(question.text || "").trim(),
       options: Array.isArray(question.options)
         ? question.options.map((option) => String(option).trim()).filter(Boolean)
         : [],
       correctAnswer: String(question.correctAnswer || "").trim(),
+      marks: Math.max(0, Number(question.marks || 1)),
+      difficulty: normalizeDifficulty(question.difficulty),
+      subject: String(question.subject || "").trim(),
+      chapter: String(question.chapter || "").trim(),
+      estimatedMinutes: Math.max(0, Number(question.estimatedMinutes || 0)),
+      required: question.required ?? true,
+      negativeMarking: Math.max(0, Number(question.negativeMarking || 0)),
+      shuffleOptions: Boolean(question.shuffleOptions),
+      tags: Array.isArray(question.tags)
+        ? question.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 20)
+        : [],
+      teacherNotes: String(question.teacherNotes || ""),
+      explanation: String(question.explanation || ""),
+      mediaUrl: String(question.mediaUrl || "").trim(),
+      data: sanitizeQuestionData(question.data),
     }))
     .filter((question) => question.text);
+}
+
+function normalizeQuestionType(type) {
+  const normalized = String(type || "").trim().toUpperCase();
+  return [
+    "MCQ",
+    "MULTI_SELECT",
+    "CQ",
+    "MATH",
+    "CODE",
+    "TRUE_FALSE",
+    "FILL_BLANK",
+    "MATCHING",
+    "ORDERING",
+    "CASE_STUDY",
+    "FILE_UPLOAD",
+    "IMAGE",
+  ].includes(normalized)
+    ? normalized
+    : "CQ";
+}
+
+function normalizeDifficulty(difficulty) {
+  const normalized = String(difficulty || "").trim().toLowerCase();
+  return ["easy", "medium", "hard"].includes(normalized) ? normalized : "medium";
+}
+
+function sanitizeQuestionData(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  return JSON.parse(JSON.stringify(data));
 }
 
 function normalizeExamStatus(status) {
@@ -372,10 +433,24 @@ function serializeExam(exam) {
     endedAt: exam.endedAt || null,
     archivedAt: exam.archivedAt || null,
     questions: exam.questions.map((question) => ({
+      id: question.id,
       type: question.type,
       text: question.text,
       options: question.options,
       correctAnswer: question.correctAnswer,
+      marks: question.marks,
+      difficulty: question.difficulty,
+      subject: question.subject,
+      chapter: question.chapter,
+      estimatedMinutes: question.estimatedMinutes,
+      required: question.required,
+      negativeMarking: question.negativeMarking,
+      shuffleOptions: question.shuffleOptions,
+      tags: question.tags || [],
+      teacherNotes: question.teacherNotes,
+      explanation: question.explanation,
+      mediaUrl: question.mediaUrl,
+      data: question.data || {},
     })),
     assignedStudents: exam.assignedStudents,
     communityStudents: exam.communityStudents,

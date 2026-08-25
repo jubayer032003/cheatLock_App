@@ -18,6 +18,7 @@ import {
 } from "../socket/proctoring.js";
 
 export const teacherRouter = express.Router();
+const MAX_INLINE_TIMELINE_PREVIEW_LENGTH = 250_000;
 
 teacherRouter.get(
   "/exams/:examId/live-proctoring",
@@ -60,12 +61,14 @@ teacherRouter.get(
         throw error;
       }
 
-      const studentId = String(req.params.studentId || "").trim().toLowerCase();
+      const studentId = normalizeStudentId(req.params.studentId);
+      const studentIds = studentIdVariants(studentId);
       const [session, events, review] = await Promise.all([
-        ExamSession.findOne({ examId: exam._id, studentId }).lean(),
-        ProctoringEvent.find({ examId: exam._id, studentId }).sort({ createdAt: 1 }).lean(),
-        IntegrityReview.findOne({ examId: exam._id, studentId }).lean(),
+        ExamSession.findOne({ examId: exam._id, studentId: { $in: studentIds } }).lean(),
+        fetchTimelineEvents(exam._id, studentIds),
+        IntegrityReview.findOne({ examId: exam._id, studentId: { $in: studentIds } }).lean(),
       ]);
+      const resolvedStudentId = session?.studentId || events[0]?.studentId || studentId;
 
       res.json({
         exam: {
@@ -73,35 +76,14 @@ teacherRouter.get(
           title: exam.title,
         },
         student: {
-          studentId,
-          studentName: session?.studentName || events[0]?.studentName || studentId,
+          studentId: resolvedStudentId,
+          studentName: session?.studentName || events[0]?.studentName || resolvedStudentId,
           onlineStatus: session?.onlineStatus || "OFFLINE",
           status: session?.status || "NOT_STARTED",
         },
-        finalSuspicionScore: session?.suspicionScore || events.at(-1)?.suspicionScore || 0,
+        finalSuspicionScore: session?.suspicionScore || events[events.length - 1]?.suspicionScore || 0,
         review: review ? serializeReview(review) : null,
-        timelineEvents: await Promise.all(
-          events.map(async (event) => {
-            let previewUrl = event.previewUrl || "";
-            if (event.previewBase64 && !event.previewBase64.startsWith("data:") && !event.previewBase64.startsWith("http")) {
-              try {
-                previewUrl = await getSignedFrameUrl(event.previewBase64);
-              } catch (err) {
-                console.error("Failed to sign frame URL for timeline:", err);
-              }
-            }
-            return {
-              id: event._id.toString(),
-              eventType: event.eventType,
-              timestamp: event.createdAt,
-              alertMessage: event.alertMessage || "",
-              suspicionScore: event.suspicionScore || 0,
-              severity: event.severity || "low",
-              previewUrl,
-              previewBase64: event.previewBase64 || "",
-            };
-          })
-        ),
+        timelineEvents: await Promise.all(events.map(serializeTimelineEvent)),
       });
     } catch (error) {
       next(error);
@@ -444,6 +426,76 @@ function isTestToolsEnabled() {
   return process.env.ENABLE_PROCTORING_TEST_TOOLS === "true" || process.env.NODE_ENV !== "production";
 }
 
+async function serializeTimelineEvent(event) {
+  let previewUrl = event.previewUrl || "";
+  let previewBase64 = event.previewBase64 || "";
+
+  if (previewBase64 && !previewBase64.startsWith("data:") && !previewBase64.startsWith("http")) {
+    try {
+      previewUrl = await getSignedFrameUrl(previewBase64);
+      previewBase64 = "";
+    } catch (err) {
+      console.error("Failed to sign frame URL for timeline:", err);
+    }
+  } else if (previewBase64.length > MAX_INLINE_TIMELINE_PREVIEW_LENGTH) {
+    previewBase64 = "";
+  }
+
+  return {
+    id: event._id.toString(),
+    eventType: event.eventType,
+    timestamp: event.createdAt,
+    alertMessage: event.alertMessage || "",
+    suspicionScore: event.suspicionScore || 0,
+    severity: event.severity || "low",
+    previewUrl,
+    previewBase64,
+  };
+}
+
+function normalizeStudentId(studentId) {
+  return String(studentId || "").trim().toLowerCase();
+}
+
+function compactStudentId(studentId) {
+  return normalizeStudentId(studentId).replace(/[^a-z0-9]/g, "");
+}
+
+function studentIdVariants(studentId) {
+  const normalized = normalizeStudentId(studentId);
+  const compact = compactStudentId(normalized);
+  return [...new Set([normalized, compact].filter(Boolean))];
+}
+
+async function fetchTimelineEvents(examId, studentIds) {
+  return ProctoringEvent.aggregate([
+    { $match: { examId, studentId: { $in: studentIds } } },
+    { $sort: { createdAt: 1 } },
+    {
+      $project: {
+        eventType: 1,
+        suspicionScore: 1,
+        alertMessage: 1,
+        severity: 1,
+        previewUrl: 1,
+        createdAt: 1,
+        previewBase64: {
+          $let: {
+            vars: { preview: { $ifNull: ["$previewBase64", ""] } },
+            in: {
+              $cond: [
+                { $gt: [{ $strLenBytes: "$$preview" }, MAX_INLINE_TIMELINE_PREVIEW_LENGTH] },
+                "",
+                "$$preview",
+              ],
+            },
+          },
+        },
+      },
+    },
+  ]);
+}
+
 async function findTeacherExam(teacherId, examId) {
   const exam = await Exam.findOne({ _id: examId, createdBy: teacherId }).lean();
   if (!exam) {
@@ -480,8 +532,8 @@ async function buildIntegrityReport(exam) {
       finalRiskScore,
       riskLevel: riskLevel(finalRiskScore),
       recommendation: recommendation(finalRiskScore, breakdown),
-      latestAlert: session?.latestAlert || studentEvents.at(-1)?.alertMessage || "",
-      lastUpdatedAt: session?.updatedAt || studentEvents.at(-1)?.createdAt || null,
+      latestAlert: session?.latestAlert || studentEvents[studentEvents.length - 1]?.alertMessage || "",
+      lastUpdatedAt: session?.updatedAt || studentEvents[studentEvents.length - 1]?.createdAt || null,
       breakdown,
       review: reviewMap.get(studentId) || {
         decision: "PENDING",

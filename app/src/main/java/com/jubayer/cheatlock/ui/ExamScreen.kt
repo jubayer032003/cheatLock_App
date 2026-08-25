@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -42,11 +43,11 @@ import androidx.core.content.ContextCompat
 import com.jubayer.cheatlock.data.ExamStorage
 import com.jubayer.cheatlock.model.Exam
 import com.jubayer.cheatlock.model.ExamFinishReason
-import com.jubayer.cheatlock.model.ExamSubmission
 import com.jubayer.cheatlock.model.StudentAnswer
 import com.jubayer.cheatlock.model.QuestionType
 import com.jubayer.cheatlock.proctoring.VoiceActivityDetector
 import com.jubayer.cheatlock.ui.theme.*
+import com.jubayer.cheatlock.util.SuspicionScoreCalculator
 import java.lang.System.currentTimeMillis
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -57,24 +58,28 @@ fun ExamScreen(
     studentId: String,
     exam: Exam,
     warningCount: Int,
+    authoritativeSuspicionScore: Int,
     onFaceWarningsChanged: (Int) -> Unit,
     onCameraPreviewChanged: (String) -> Unit,
     onPhoneDetected: (String) -> Unit,
     onAudioWarning: () -> Unit,
-    onSubmitExam: (ExamSubmission) -> Unit,
-    onFinishExam: (List<StudentAnswer>, ExamFinishReason) -> Unit
+    onFinishExam: suspend (List<StudentAnswer>, ExamFinishReason) -> Boolean,
+    onSubmissionTransitionComplete: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
     val examStorage = remember { ExamStorage(context) }
+    val examDurationSeconds = remember(exam.id, exam.durationMinutes) {
+        exam.durationMinutes.coerceAtLeast(1) * 60
+    }
     val questions = remember {
-        (exam.questions ?: emptyList()).mapIndexed { index, question ->
+        exam.questions.mapIndexed { index, question ->
             IndexedQuestion(
                 index,
                 question.type,
                 question.text,
-                (question.options ?: emptyList()).shuffled()
+                question.options.shuffled()
             )
         }.shuffled()
     }
@@ -83,15 +88,18 @@ fun ExamScreen(
     var showWarningDialog by remember { mutableStateOf(false) }
     var showSavedMessage by remember { mutableStateOf(false) }
     var showSubmitConfirm by remember { mutableStateOf(false) }
+    var submissionState by remember { mutableStateOf(ExamSubmissionState.IDLE) }
+    var submissionError by remember { mutableStateOf<String?>(null) }
+    var pendingFinishReason by remember { mutableStateOf(ExamFinishReason.SUBMITTED) }
     var faceMissingWarnings by remember { mutableStateOf(0) }
     var audioWarnings by remember { mutableStateOf(0) }
     var phoneWarnings by remember { mutableStateOf(0) }
     var lastFaceWarningTime by remember { mutableStateOf(0L) }
     var lastPhoneWarningTime by remember { mutableStateOf(0L) }
     var hasFaceBeenDetectedOnce by remember { mutableStateOf(false) }
-    var timeLeft by remember { mutableStateOf(exam.durationMinutes * 60) }
+    var timeLeft by remember { mutableStateOf(examDurationSeconds) }
     var questionTimeLeft by remember {
-        mutableStateOf(((exam.durationMinutes * 60) / exam.questions.size.coerceAtLeast(1)).coerceAtLeast(30))
+        mutableStateOf((examDurationSeconds / exam.questions.size.coerceAtLeast(1)).coerceAtLeast(30))
     }
     var faceStatus by remember { mutableStateOf(FaceStatus.CHECKING) }
     var isFinished by remember { mutableStateOf(false) }
@@ -106,7 +114,7 @@ fun ExamScreen(
 
     // Alert animation state
     var alertPulseActive by remember { mutableStateOf(false) }
-    LaunchedEffect(warningCount, faceMissingWarnings, audioWarnings, phoneWarnings) {
+    LaunchedEffect(warningCount, faceMissingWarnings, audioWarnings, phoneWarnings, authoritativeSuspicionScore) {
         if (monitoringEnabled) {
             alertPulseActive = true
             delay(2000)
@@ -168,47 +176,71 @@ fun ExamScreen(
     }
 
     fun finishExam(reason: ExamFinishReason) {
-        if (isFinished) return
-        isFinished = true
+        if (isFinished || submissionState == ExamSubmissionState.SUBMITTING || submissionState == ExamSubmissionState.SUBMITTED || submissionState == ExamSubmissionState.REDIRECTING) return
+        pendingFinishReason = reason
+        submissionState = ExamSubmissionState.SUBMITTING
+        submissionError = null
+        monitoringEnabled = false
         showSubmitConfirm = false
         showWarningDialog = false
         examStorage.saveWarnings(warningCount, faceMissingWarnings)
         val answersSnapshot = collectAnswers()
         scope.launch {
-            delay(120)
-            onFinishExam(answersSnapshot, reason)
+            val submitted = runCatching {
+                onFinishExam(answersSnapshot, reason)
+            }.onFailure { error ->
+                submissionError = error.message ?: "We couldn't submit your exam."
+            }.getOrDefault(false)
+
+            if (submitted) {
+                isFinished = true
+                submissionState = ExamSubmissionState.SUBMITTED
+                delay(1000)
+                submissionState = ExamSubmissionState.REDIRECTING
+                onSubmissionTransitionComplete()
+            } else {
+                monitoringEnabled = true
+                submissionError = submissionError ?: "We couldn't submit your exam. Your answers are still saved. Please try again."
+                submissionState = ExamSubmissionState.FAILED
+            }
         }
     }
 
     BackHandler(enabled = true) {
-        showWarningDialog = true
+        if (submissionState == ExamSubmissionState.IDLE || submissionState == ExamSubmissionState.FAILED) {
+            showWarningDialog = true
+        }
     }
 
     val currentQuestion = questions.getOrNull(currentQuestionIndex)
     val isCurrentQuestionLocked = lockedQuestions.getOrNull(currentQuestionIndex) ?: false
     val answeredCount = answers.count { it.isNotBlank() }
     val perQuestionSeconds = remember {
-        ((exam.durationMinutes * 60) / questions.size.coerceAtLeast(1)).coerceAtLeast(30)
+        (examDurationSeconds / questions.size.coerceAtLeast(1)).coerceAtLeast(30)
     }
     val noCopyToolbar = remember { NoCopyTextToolbar }
 
     LaunchedEffect(Unit) {
         while (timeLeft > 0 && !isFinished) {
             delay(1000)
-            timeLeft--
+            if (submissionState == ExamSubmissionState.IDLE || submissionState == ExamSubmissionState.FAILED) {
+                timeLeft--
+            }
         }
-        if (!isFinished) {
+        if (!isFinished && timeLeft <= 0) {
             finishExam(ExamFinishReason.TIME_EXPIRED)
         }
     }
 
-    LaunchedEffect(currentQuestionIndex) {
+    LaunchedEffect(currentQuestionIndex, submissionState) {
         questionTimeLeft = perQuestionSeconds
         while (questionTimeLeft > 0 && !isFinished && !lockedQuestions[currentQuestionIndex]) {
             delay(1000)
-            questionTimeLeft--
+            if (submissionState == ExamSubmissionState.IDLE || submissionState == ExamSubmissionState.FAILED) {
+                questionTimeLeft--
+            }
         }
-        if (!isFinished && !lockedQuestions[currentQuestionIndex]) {
+        if (!isFinished && questionTimeLeft <= 0 && !lockedQuestions[currentQuestionIndex]) {
             lockedQuestions[currentQuestionIndex] = true
             if (currentQuestionIndex < questions.lastIndex) {
                 currentQuestionIndex++
@@ -217,7 +249,7 @@ fun ExamScreen(
     }
 
     LaunchedEffect(warningCount) {
-        if (warningCount > 0) {
+        if (warningCount > 0 && submissionState == ExamSubmissionState.IDLE) {
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
             showWarningDialog = true
         }
@@ -225,23 +257,14 @@ fun ExamScreen(
 
     LaunchedEffect(warningCount, faceMissingWarnings, audioWarnings, phoneWarnings) {
         autoSaveProgress()
-        val totalWarnings = warningCount + faceMissingWarnings + audioWarnings + phoneWarnings
-        val score = (totalWarnings * 20).coerceIn(0, 100)
-        
-        if (score >= 100) {
-            val submission = ExamSubmission(
-                examId = exam.id,
-                studentId = studentId,
-                answers = collectAnswers(),
-                appSwitchWarnings = warningCount,
-                faceMissingWarnings = faceMissingWarnings,
-                audioWarnings = audioWarnings,
-                phoneWarnings = phoneWarnings,
-                totalWarnings = totalWarnings,
-                riskLevel = "Maximum Risk (Auto-Locked)",
-                submittedAt = System.currentTimeMillis()
-            )
-            onSubmitExam(submission)
+        val locallyCalculatedScore = SuspicionScoreCalculator.calculateScore(
+            appSwitchWarnings = warningCount,
+            faceMissingWarnings = faceMissingWarnings,
+            audioWarnings = audioWarnings,
+            phoneWarnings = phoneWarnings,
+        )
+
+        if (locallyCalculatedScore >= 100 && submissionState == ExamSubmissionState.IDLE) {
             finishExam(ExamFinishReason.LOCKED)
         }
     }
@@ -286,7 +309,7 @@ fun ExamScreen(
                         Log.w("ExamScreen", "AudioRecord.startRecording() did not transition to RECORDING state")
                     }
                     
-                    while (recordingStarted && !isFinished) {
+                    while (recordingStarted && !isFinished && submissionState != ExamSubmissionState.SUBMITTING && submissionState != ExamSubmissionState.SUBMITTED && submissionState != ExamSubmissionState.REDIRECTING) {
                         val read = recorder.read(buffer, 0, buffer.size)
                         if (read > 0) {
                             // Process raw pcm buffer through offline DSP-VAD engine
@@ -332,19 +355,42 @@ fun ExamScreen(
             title = { Text("Submit Exam?") },
             text = { Text("You answered $answeredCount out of ${questions.size} questions. Are you sure you want to submit?") },
             confirmButton = {
-                Button(onClick = {
+                Button(
+                    enabled = submissionState != ExamSubmissionState.SUBMITTING,
+                    onClick = {
                     showSubmitConfirm = false
-                    val totalWarnings = warningCount + faceMissingWarnings + audioWarnings + phoneWarnings
-                    val riskLevel = when {
-                        totalWarnings >= 5 -> "High Risk"
-                        totalWarnings >= 3 -> "Medium Risk"
-                        else -> "Low Risk"
-                    }
-                    val submission = ExamSubmission(examId = exam.id, studentId = studentId, answers = collectAnswers(), appSwitchWarnings = warningCount, faceMissingWarnings = faceMissingWarnings, audioWarnings = audioWarnings, phoneWarnings = phoneWarnings, totalWarnings = totalWarnings, riskLevel = riskLevel, submittedAt = System.currentTimeMillis())
-                    onSubmitExam(submission); finishExam(ExamFinishReason.SUBMITTED)
+                    finishExam(ExamFinishReason.SUBMITTED)
                 }) { Text("Submit") }
             },
             dismissButton = { OutlinedButton(onClick = { showSubmitConfirm = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (submissionState == ExamSubmissionState.SUBMITTING ||
+        submissionState == ExamSubmissionState.SUBMITTED ||
+        submissionState == ExamSubmissionState.REDIRECTING
+    ) {
+        SubmissionTransitionScreen(submissionState)
+        return
+    }
+
+    if (submissionState == ExamSubmissionState.FAILED) {
+        AlertDialog(
+            onDismissRequest = { submissionState = ExamSubmissionState.IDLE },
+            title = { Text("Submission failed") },
+            text = {
+                Text(submissionError ?: "We couldn't submit your exam. Your answers are still saved. Please try again.")
+            },
+            confirmButton = {
+                Button(onClick = { finishExam(pendingFinishReason) }) {
+                    Text("Try again")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { submissionState = ExamSubmissionState.IDLE }) {
+                    Text("Review answers")
+                }
+            }
         )
     }
 
@@ -368,7 +414,7 @@ fun ExamScreen(
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(text = "Screenshots and screen recording are blocked. Leaving the app, copy/paste, and suspicious camera activity are monitored.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(modifier = Modifier.height(6.dp))
-                    SuspicionMeter(score = ((warningCount + faceMissingWarnings + audioWarnings + phoneWarnings) * 20).coerceIn(0, 100))
+                    SuspicionMeter(score = authoritativeSuspicionScore)
                     Spacer(modifier = Modifier.height(10.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         StatusPill("Secure", CheatLockSuccess)
@@ -419,7 +465,7 @@ fun ExamScreen(
                                     shape = MaterialTheme.shapes.medium
                                 )
                         ) {
-                            if (cameraHardwareReady) {
+                            if (cameraHardwareReady && submissionState == ExamSubmissionState.IDLE) {
                                 CameraPreview(
                                     modifier = Modifier.fillMaxSize(),
                                     preferFastStartup = true,
@@ -447,7 +493,7 @@ fun ExamScreen(
                             }
 
                             // Ambient Noise Floor Calibration Overlay
-                            if (isAudioCalibrating) {
+                            if (isAudioCalibrating && submissionState == ExamSubmissionState.IDLE) {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
@@ -457,7 +503,7 @@ fun ExamScreen(
                                 ) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                         Icon(
-                                            imageVector = Icons.Default.VolumeUp, 
+                                            imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                             contentDescription = null, 
                                             tint = CheatLockPurpleSoft, 
                                             modifier = Modifier.size(36.dp)
@@ -617,7 +663,7 @@ fun ExamScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 if (currentQuestion.type == QuestionType.MCQ) {
-                    (currentQuestion.options ?: emptyList()).forEach { option ->
+                    currentQuestion.options.forEach { option ->
                         Row(modifier = Modifier.fillMaxWidth()) {
                             RadioButton(selected = answers[currentQuestionIndex] == option, onClick = { if (!isCurrentQuestionLocked || !exam.lockAnswers) { answers[currentQuestionIndex] = option; examStorage.saveAnswer(currentQuestion.id, option); examStorage.saveWarnings(warningCount, faceMissingWarnings); showSavedMessage = true } }, enabled = !isCurrentQuestionLocked || !exam.lockAnswers)
                             Text(option)
@@ -644,7 +690,89 @@ fun ExamScreen(
             }
 
             Spacer(modifier = Modifier.height(12.dp))
-            GradientPrimaryButton(text = "Finish Exam", onClick = { showSubmitConfirm = true }, modifier = Modifier.fillMaxWidth())
+            GradientPrimaryButton(
+                text = if (submissionState == ExamSubmissionState.FAILED) "Retry Submission" else "Finish Exam",
+                onClick = {
+                    if (submissionState == ExamSubmissionState.FAILED) {
+                        finishExam(pendingFinishReason)
+                    } else {
+                        showSubmitConfirm = true
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+private enum class ExamSubmissionState {
+    IDLE,
+    SUBMITTING,
+    SUBMITTED,
+    REDIRECTING,
+    FAILED
+}
+
+@Composable
+private fun SubmissionTransitionScreen(state: ExamSubmissionState) {
+    PremiumScreen(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            PremiumCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    if (state == ExamSubmissionState.SUBMITTING) {
+                        CircularProgressIndicator(color = CheatLockPurpleSoft)
+                        Text(
+                            text = "Submitting your exam...",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Text(
+                            text = "Please keep this page open.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = CheatLockTextSecondaryDark,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = CheatLockSuccess,
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Text(
+                            text = "Exam Completed",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Text(
+                            text = "Your responses have been submitted successfully.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = CheatLockTextSecondaryDark,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Text(
+                            text = "Preparing your results...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = CheatLockPurpleSoft,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
+            }
         }
     }
 }

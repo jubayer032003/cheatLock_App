@@ -1,10 +1,11 @@
 import Redis from "ioredis";
+import { config } from "../config.js";
 import { logger } from "../services/logger.js";
 
 const LIMIT_WINDOW_MS = 60 * 1000; // 1 minute window
 const MAX_REQUESTS_PER_WINDOW = 120; // 120 requests/minute limit
 
-const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
+const redisUrl = config.redis.url;
 let redisConnected = false;
 
 // Initialize Redis client with reconnection limits
@@ -16,7 +17,7 @@ const redis = new Redis(redisUrl, {
 redis.connect()
   .then(() => {
     redisConnected = true;
-    logger.info(`Rate limiter connected to Redis at: ${redisUrl}`);
+    logger.info("Rate limiter connected to Redis.");
   })
   .catch((err) => {
     redisConnected = false;
@@ -108,4 +109,3 @@ setInterval(() => {
     }
   }
 }, 10 * 60 * 1000);
-

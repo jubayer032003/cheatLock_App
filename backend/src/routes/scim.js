@@ -2,6 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import { User } from "../models/User.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { generateResetToken } from "./auth.js";
 
 export const scimRouter = express.Router();
 
@@ -62,13 +63,15 @@ scimRouter.post(
         return;
       }
 
-      const defaultHash = await bcrypt.hash("CheatLock123!", 10);
+      const passwordHash = await bcrypt.hash(generateResetToken(), 12);
       const user = await User.create({
         name: name?.formatted || userName,
         identifier: email,
-        passwordHash: defaultHash,
+        passwordHash,
         role: "STUDENT",
         status: active !== false ? "ACTIVE" : "INACTIVE",
+        mustChangePassword: true,
+        passwordChangedAt: new Date(),
       });
 
       res.status(201).json({
