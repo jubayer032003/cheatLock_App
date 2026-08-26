@@ -560,7 +560,13 @@ class MainActivity : FragmentActivity() {
                     val secureExamActive =
                         rootScreen == AppRootScreen.Exam ||
                             (isLoggedIn && !isExamSubmitted && activeExam != null)
-                    examSecurity.setEnabled(secureExamActive)
+                    val resultScreenActive =
+                        (rootScreen == AppRootScreen.Result && isExamSubmitted) ||
+                            rootScreen == AppRootScreen.SelfExamResult
+                    examSecurity.setEnabled(
+                        enabled = secureExamActive,
+                        keepScreenOnAfterDisable = resultScreenActive
+                    )
                 }
 
                 AnimatedContent(

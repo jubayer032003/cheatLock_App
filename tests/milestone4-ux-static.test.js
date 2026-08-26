@@ -60,6 +60,17 @@ test("desktop save and submission states expose truthful accessible text", () =>
   assert.match(exam, /if \(!activeExam \|\| !user \|\| !activeSession \|\| submitting\) return/);
 });
 
+test("mobile exam result handoff keeps the screen awake for every result surface", () => {
+  const mainActivity = read("app/src/main/java/com/jubayer/cheatlock/MainActivity.kt");
+  const securityController = read("app/src/main/java/com/jubayer/cheatlock/security/ExamSecurityController.kt");
+
+  assert.match(mainActivity, /rootScreen == AppRootScreen\.Result && isExamSubmitted/);
+  assert.match(mainActivity, /rootScreen == AppRootScreen\.SelfExamResult/);
+  assert.match(mainActivity, /keepScreenOnAfterDisable = resultScreenActive/);
+  assert.match(securityController, /window\.addFlags\(WindowManager\.LayoutParams\.FLAG_KEEP_SCREEN_ON\)/);
+  assert.match(securityController, /window\.clearFlags\(WindowManager\.LayoutParams\.FLAG_KEEP_SCREEN_ON\)/);
+});
+
 test("unsupported security and monitoring claims are removed from reviewed user-facing files", () => {
   const login = read("web-dashboard/src/pages/LoginPage.tsx");
   const readme = read("README.md");
