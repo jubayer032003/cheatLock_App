@@ -147,6 +147,41 @@ test("existing teacher login still works", async () => {
   assert.equal(decoded.role, "TEACHER");
 });
 
+test("dedicated admin login accepts only admin dashboard roles", async () => {
+  const adminPasswordHash = await bcrypt.hash("admin-pass", 4);
+  const studentPasswordHash = await bcrypt.hash("student-pass", 4);
+  users.set(userKey("admin-login@example.com", "SUPER_ADMIN"), {
+    _id: { toString: () => "admin-1" },
+    name: "Existing Admin",
+    identifier: "admin-login@example.com",
+    passwordHash: adminPasswordHash,
+    role: "SUPER_ADMIN",
+  });
+  users.set(userKey("student-login@example.com", "STUDENT"), {
+    _id: { toString: () => "student-1" },
+    name: "Existing Student",
+    identifier: "student-login@example.com",
+    passwordHash: studentPasswordHash,
+    role: "STUDENT",
+  });
+
+  const adminResponse = await post("/auth/admin-login", {
+    identifier: "admin-login@example.com",
+    password: "admin-pass",
+    role: "SUPER_ADMIN",
+  });
+  assert.equal(adminResponse.status, 200);
+  assert.equal(adminResponse.body.user.role, "SUPER_ADMIN");
+
+  const studentResponse = await post("/auth/admin-login", {
+    identifier: "student-login@example.com",
+    password: "student-pass",
+    role: "STUDENT",
+  });
+  assert.equal(studentResponse.status, 403);
+  assert.equal(studentResponse.body.message, "This dashboard accepts administrator accounts only.");
+});
+
 test("teacher dashboard no longer offers public teacher registration", async () => {
   const [loginPage, api] = await Promise.all([
     readFile(new URL("../web-dashboard/src/pages/LoginPage.tsx", import.meta.url), "utf8"),
@@ -158,6 +193,13 @@ test("teacher dashboard no longer offers public teacher registration", async () 
   assert.equal(api.includes("signupTeacher"), false);
   assert.equal(api.includes('role: "TEACHER",'), true, "teacher login should still request TEACHER");
   assert.equal(api.includes("/auth/signup"), false);
+});
+
+test("admin dashboard uses dedicated admin login endpoint", async () => {
+  const api = await readFile(new URL("../admin-dashboard/src/lib/api.ts", import.meta.url), "utf8");
+
+  assert.equal(api.includes("/auth/admin-login"), true);
+  assert.equal(api.includes("/auth/login"), false);
 });
 
 function createApp() {

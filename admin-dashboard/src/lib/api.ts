@@ -37,7 +37,7 @@ api.interceptors.response.use(
 );
 
 export async function loginAdmin(identifier: string, password: string, role: string) {
-  const { data } = await api.post<LoginResponse>("/auth/login", {
+  const { data } = await api.post<LoginResponse>("/auth/admin-login", {
     identifier: identifier.trim(),
     password,
     role,

@@ -7,6 +7,8 @@ import { User } from "../models/User.js";
 
 export const authRouter = express.Router();
 
+const ADMIN_LOGIN_ROLES = ["SUPER_ADMIN", "INSTITUTION_ADMIN", "DEPARTMENT_ADMIN"];
+
 authRouter.post("/signup", async (req, res, next) => {
   try {
     const { name, identifier: rawIdentifier, password, role: rawRole } = req.body;
@@ -59,6 +61,64 @@ authRouter.post("/signup", async (req, res, next) => {
       token,
       user: serializeUser(user),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.post("/admin-login", async (req, res, next) => {
+  try {
+    const { identifier: rawIdentifier, email, password, role: rawRole } = req.body;
+    const identifier = normalizeIdentifier(rawIdentifier || email);
+    const role = String(rawRole || "").toUpperCase().trim();
+
+    console.debug("[auth.admin-login] incoming request", {
+      ip: req.ip,
+      identifier: identifier ? identifier.replace(/(.+)@(.+)/, "***@***") : null,
+      role,
+    });
+
+    if (!identifier || !password || !role) {
+      const error = new Error("Identifier/email, password, and admin role are required.");
+      error.status = 400;
+      throw error;
+    }
+
+    if (!ADMIN_LOGIN_ROLES.includes(role)) {
+      const error = new Error("This dashboard accepts administrator accounts only.");
+      error.status = 403;
+      throw error;
+    }
+
+    const user = await User.findOne({ identifier, role });
+    if (!user) {
+      const error = new Error("Invalid admin credentials.");
+      error.status = 401;
+      throw error;
+    }
+
+    if (!(await bcrypt.compare(password, user.passwordHash))) {
+      const error = new Error("Invalid admin credentials.");
+      error.status = 401;
+      throw error;
+    }
+
+    const token = jwt.sign(
+      {
+        sub: user._id.toString(),
+        identifier: user.identifier,
+        role: user.role,
+      },
+      config.jwt.secret(),
+      { expiresIn: config.jwt.expiresIn }
+    );
+
+    res.json({
+      token,
+      user: serializeUser(user),
+    });
+
+    console.debug("[auth.admin-login] login successful for user", user._id?.toString());
   } catch (error) {
     next(error);
   }

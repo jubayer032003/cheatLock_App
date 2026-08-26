@@ -11,6 +11,8 @@ import { deleteStudentAccount } from "../services/accountDeletion.js";
 
 export const authRouter = express.Router();
 
+const ADMIN_LOGIN_ROLES = ["SUPER_ADMIN", "INSTITUTION_ADMIN", "DEPARTMENT_ADMIN"];
+
 authRouter.post("/signup", signupRateLimiter, async (req, res, next) => {
   try {
     const { name, identifier: rawIdentifier, password, role: rawRole } = req.body;
@@ -64,6 +66,64 @@ authRouter.post("/signup", signupRateLimiter, async (req, res, next) => {
       token,
       user: serializeUser(user),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.post("/admin-login", loginRateLimiter, async (req, res, next) => {
+  try {
+    const { identifier: rawIdentifier, email, password, role: rawRole } = req.body;
+    const identifier = normalizeIdentifier(rawIdentifier || email);
+    const role = String(rawRole || "").toUpperCase().trim();
+
+    logger.debug("Admin login attempt received.", { role, hasIdentifier: Boolean(identifier) });
+
+    if (!identifier || !password || !role) {
+      const error = new Error("Identifier/email, password, and admin role are required.");
+      error.status = 400;
+      throw error;
+    }
+
+    if (!ADMIN_LOGIN_ROLES.includes(role)) {
+      const error = new Error("This dashboard accepts administrator accounts only.");
+      error.status = 403;
+      error.code = "ADMIN_ROLE_REQUIRED";
+      throw error;
+    }
+
+    const user = await User.findOne({ identifier, role });
+    if (!user) {
+      const error = new Error("Invalid admin credentials.");
+      error.status = 401;
+      error.code = "INVALID_ADMIN_CREDENTIALS";
+      throw error;
+    }
+
+    if (!(await bcrypt.compare(password, user.passwordHash))) {
+      const error = new Error("Invalid admin credentials.");
+      error.status = 401;
+      error.code = "INVALID_ADMIN_CREDENTIALS";
+      throw error;
+    }
+
+    const token = jwt.sign(
+      {
+        sub: user._id.toString(),
+        identifier: user.identifier,
+        role: user.role,
+        tokenVersion: user.tokenVersion || 0,
+      },
+      config.jwt.secret(),
+      { expiresIn: config.jwt.expiresIn }
+    );
+
+    res.json({
+      token,
+      user: serializeUser(user),
+    });
+
+    logger.debug("Admin login successful.", { userId: user._id?.toString(), role: user.role });
   } catch (error) {
     next(error);
   }
