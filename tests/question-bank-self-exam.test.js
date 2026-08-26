@@ -68,6 +68,8 @@ test("admin hierarchy payloads normalize slugs and preserve parent references", 
 
 test("question bank routes enforce backend authorization before service-role access", () => {
   const source = readFileSync(new URL("../backend/src/routes/questionBank.js", import.meta.url), "utf8");
+  const rootSource = readFileSync(new URL("../src/routes/questionBank.js", import.meta.url), "utf8");
+  const rootServerSource = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   for (const path of [
     '"/admin/classes"',
     '"/admin/subjects"',
@@ -80,13 +82,24 @@ test("question bank routes enforce backend authorization before service-role acc
     const routeLine = source.slice(index, source.indexOf("async", index));
     assert.match(routeLine, /requireAuth/);
     assert.match(routeLine, /requireRole/);
+    const rootIndex = rootSource.indexOf(path);
+    assert.notEqual(rootIndex, -1, `root ${path} route should exist`);
+    const rootRouteLine = rootSource.slice(rootIndex, rootSource.indexOf("async", rootIndex));
+    assert.match(rootRouteLine, /requireAuth/);
+    assert.match(rootRouteLine, /requireRole/);
   }
+  assert.match(rootSource, /from "\.\.\/\.\.\/backend\/src\/services\/questionBankService\.js"/);
+  assert.match(rootServerSource, /app\.use\("\/question-bank", questionBankRouter\)/);
   assert.match(source, /post\("\/questions", requireAuth, requireRole\(ADMIN_ROLES\)/);
   assert.match(source, /put\("\/questions\/:questionId", requireAuth, requireRole\(ADMIN_ROLES\)/);
   assert.match(source, /patch\("\/questions\/:questionId\/status", requireAuth, requireRole\(ADMIN_ROLES\)/);
+  assert.match(rootSource, /post\("\/questions", requireAuth, requireRole\(ADMIN_ROLES\)/);
+  assert.match(rootSource, /put\("\/questions\/:questionId", requireAuth, requireRole\(ADMIN_ROLES\)/);
+  assert.match(rootSource, /patch\("\/questions\/:questionId\/status", requireAuth, requireRole\(ADMIN_ROLES\)/);
   assert.match(source, /post\("\/teacher\/questions\/snapshots", requireAuth, requireRole\("TEACHER"\)/);
   assert.match(source, /post\("\/teacher\/exams\/:examId\/questions", requireAuth, requireRole\("TEACHER"\)/);
   assert.match(source, /req\.user\.role === "TEACHER" \? \{ \.\.\.req\.query, status: "active" \}/);
+  assert.match(rootSource, /req\.user\.role === "TEACHER" \? \{ \.\.\.req\.query, status: "active" \}/);
 });
 
 test("self exam routes require authenticated student role before service access", () => {
