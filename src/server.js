@@ -18,6 +18,7 @@ import { tenantsRouter } from "./routes/tenants.js";
 import { scimRouter } from "./routes/scim.js";
 import { ltiRouter } from "./routes/lti.js";
 import { publicApiRouter } from "./routes/publicApi.js";
+import { selfExamRouter } from "./routes/selfExam.js";
 import { Server } from "socket.io";
 import { configureProctoringSocket } from "./socket/proctoring.js";
 import { rateLimiter } from "./middleware/rateLimiter.js";
@@ -95,6 +96,9 @@ app.use("/tenants", tenantsRouter);
 app.use("/scim", scimRouter);
 app.use("/lti", ltiRouter);
 app.use("/public", publicApiRouter);
+app.use("/self-exam", selfExamRouter);
+app.use("/self-exams", selfExamRouter);
+app.use("/seft-exam", selfExamRouter);
 
 const io = new Server(server, {
   cors: {

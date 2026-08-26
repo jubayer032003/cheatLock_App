@@ -92,6 +92,8 @@ test("question bank routes enforce backend authorization before service-role acc
 test("self exam routes require authenticated student role before service access", () => {
   const source = readFileSync(new URL("../backend/src/routes/selfExam.js", import.meta.url), "utf8");
   const serverSource = readFileSync(new URL("../backend/src/server.js", import.meta.url), "utf8");
+  const rootServerSource = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const rootRouteSource = readFileSync(new URL("../src/routes/selfExam.js", import.meta.url), "utf8");
   for (const path of [
     '"/classes"',
     '"/classes/:classId/subjects"',
@@ -112,9 +114,16 @@ test("self exam routes require authenticated student role before service access"
   }
   assert.match(source, /req\.user\.identifier/);
   assert.doesNotMatch(source, /req\.body\.studentId|req\.query\.studentId/);
+  assert.match(rootRouteSource, /requireAuth/);
+  assert.match(rootRouteSource, /requireRole\("STUDENT"\)/);
+  assert.match(rootRouteSource, /req\.user\.identifier/);
+  assert.doesNotMatch(rootRouteSource, /req\.body\.studentId|req\.query\.studentId/);
   assert.match(serverSource, /app\.use\("\/self-exam", selfExamRouter\)/);
   assert.match(serverSource, /app\.use\("\/self-exams", selfExamRouter\)/);
   assert.match(serverSource, /app\.use\("\/seft-exam", selfExamRouter\)/);
+  assert.match(rootServerSource, /app\.use\("\/self-exam", selfExamRouter\)/);
+  assert.match(rootServerSource, /app\.use\("\/self-exams", selfExamRouter\)/);
+  assert.match(rootServerSource, /app\.use\("\/seft-exam", selfExamRouter\)/);
   assert.match(serverSource, /ROUTE_NOT_FOUND/);
   assert.match(serverSource, /Route not found: \$\{req\.method\} \$\{req\.originalUrl\}/);
 });
