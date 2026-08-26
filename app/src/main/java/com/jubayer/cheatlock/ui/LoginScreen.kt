@@ -321,77 +321,8 @@ private fun LoginDecorativeNebula() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        AuthBackgroundSecondary,
-                        AuthBackground,
-                        Color(0xFF040912)
-                    )
-                )
-            )
+            .background(AuthBackground)
     )
-    Canvas(modifier = Modifier.fillMaxSize()) {
-        val brandCenter = Offset(size.width * 0.5f, size.height * 0.18f)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    AuthBrand.copy(alpha = 0.13f),
-                    AuthBrand.copy(alpha = 0.06f),
-                    Color.Transparent
-                ),
-                center = brandCenter,
-                radius = size.minDimension * 0.56f
-            )
-        )
-
-        val ringRadius = size.minDimension * 0.28f
-        repeat(4) { index ->
-            drawCircle(
-                color = AuthBrand.copy(alpha = 0.105f - index * 0.02f),
-                center = brandCenter,
-                radius = ringRadius + index * 24.dp.toPx(),
-                style = Stroke(
-                    width = 1.dp.toPx(),
-                    pathEffect = if (index % 2 == 0) PathEffect.dashPathEffect(floatArrayOf(7f, 12f), 0f) else null
-                )
-            )
-        }
-
-        val lineColor = AuthBrandCyan.copy(alpha = 0.07f)
-        val yBase = size.height * 0.20f
-        repeat(4) { row ->
-            val y = yBase + row * 32.dp.toPx()
-            drawLine(
-                color = lineColor,
-                start = Offset(size.width * 0.08f, y),
-                end = Offset(size.width * 0.32f, y),
-                strokeWidth = 1.dp.toPx()
-            )
-            drawLine(
-                color = lineColor,
-                start = Offset(size.width * 0.68f, y + 10.dp.toPx()),
-                end = Offset(size.width * 0.92f, y + 10.dp.toPx()),
-                strokeWidth = 1.dp.toPx()
-            )
-        }
-
-        val dots = listOf(
-            Offset(0.14f, 0.16f), Offset(0.22f, 0.22f), Offset(0.31f, 0.13f),
-            Offset(0.42f, 0.25f), Offset(0.58f, 0.12f), Offset(0.70f, 0.21f),
-            Offset(0.84f, 0.16f), Offset(0.17f, 0.34f), Offset(0.29f, 0.40f),
-            Offset(0.73f, 0.35f), Offset(0.86f, 0.43f), Offset(0.11f, 0.76f),
-            Offset(0.25f, 0.82f), Offset(0.39f, 0.88f), Offset(0.56f, 0.79f),
-            Offset(0.72f, 0.86f), Offset(0.88f, 0.78f), Offset(0.49f, 0.92f)
-        )
-        dots.forEachIndexed { index, dot ->
-            drawCircle(
-                color = if (index % 4 == 0) AuthBrandCyan.copy(alpha = 0.18f) else AuthBrand.copy(alpha = 0.12f),
-                radius = if (index % 5 == 0) 1.4.dp.toPx() else 0.9.dp.toPx(),
-                center = Offset(dot.x * size.width, dot.y * size.height)
-            )
-        }
-    }
 }
 
 @Composable

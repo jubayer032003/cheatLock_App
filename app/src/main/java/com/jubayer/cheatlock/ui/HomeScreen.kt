@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -65,6 +66,7 @@ private val DrawerTextSecondary = Color(0xFF94A3B8)
 private val DrawerTextMuted = Color(0xFF64748B)
 private val DrawerBorder = Color(0xFF20304D)
 private val DrawerCrispBorder = Color(0xFF5082BE)
+private const val WATCH_DEMO_URL = "https://youtu.be/OzYVLCNSPew?si=5g-e7n7y8qthYtoU"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -274,6 +276,8 @@ private fun HomeTopBar(
 
 @Composable
 private fun HeroSection(onGetStarted: () -> Unit) {
+    val uriHandler = LocalUriHandler.current
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -363,7 +367,7 @@ private fun HeroSection(onGetStarted: () -> Unit) {
             Spacer(Modifier.height(22.dp))
 
             TextButton(
-                onClick = { /* Watch Video */ },
+                onClick = { uriHandler.openUri(WATCH_DEMO_URL) },
                 modifier = Modifier.height(54.dp),
                 colors = ButtonDefaults.textButtonColors(
                     contentColor = HomeTextPrimary
