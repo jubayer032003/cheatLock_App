@@ -1,5 +1,5 @@
 import { getSupabaseAdminClient, throwSupabaseError } from "./supabaseClient.js";
-import { isUuid, serializeQuestion } from "./questionBankService.js";
+import { collectNodeAndDescendantIds, isUuid, serializeQuestion } from "./questionBankService.js";
 
 const DIFFICULTY_MODES = new Set(["easy", "medium", "hard", "mixed"]);
 const FINAL_STATUSES = new Set(["submitted", "expired", "cancelled"]);
@@ -7,10 +7,15 @@ const FINAL_STATUSES = new Set(["submitted", "expired", "cancelled"]);
 export function normalizeSelfExamConfig(body = {}) {
   const durationMinutes = Number(body.durationMinutes || body.duration_minutes || 10);
   const questionCount = Number(body.questionCount || body.question_count || 10);
+  const classId = body.classId || body.class_id;
+  const subjectId = body.subjectId || body.subject_id;
+  const chapterId = body.chapterId || body.chapter_id;
+  const nodeId = body.nodeId || body.node_id || body.chapterId || body.chapter_id || body.subjectId || body.subject_id || body.classId || body.class_id;
   const config = {
-    class_id: requiredUuid(body.classId || body.class_id, "Class is required."),
-    subject_id: requiredUuid(body.subjectId || body.subject_id, "Subject is required."),
-    chapter_id: optionalUuid(body.chapterId || body.chapter_id, "Invalid chapter."),
+    node_id: requiredUuid(nodeId, "Question bank selection is required."),
+    class_id: classId ? requiredUuid(classId, "Class is required.") : null,
+    subject_id: subjectId ? requiredUuid(subjectId, "Subject is required.") : null,
+    chapter_id: chapterId ? requiredUuid(chapterId, "Chapter is required.") : null,
     duration_minutes: integerInRange(durationMinutes, 1, 180, "Duration must be between 1 and 180 minutes."),
     question_count: integerInRange(questionCount, 1, 100, "Question count must be between 1 and 100."),
     difficulty_mode: normalizeDifficultyMode(body.difficultyMode || body.difficulty_mode || "mixed"),
@@ -63,10 +68,25 @@ export function pickQuestionIds(questions, count, difficultyMode = "mixed", rand
 
 export async function createSelfExamSession(studentId, body) {
   const config = normalizeSelfExamConfig(body);
-  await assertHierarchy(config);
+  const schemaMode = await resolveSelfExamSelection(config);
+  const insertPayload = schemaMode === "legacy"
+    ? {
+        class_id: config.class_id,
+        subject_id: config.subject_id,
+        chapter_id: config.chapter_id,
+        duration_minutes: config.duration_minutes,
+        question_count: config.question_count,
+        difficulty_mode: config.difficulty_mode,
+      }
+    : {
+        node_id: config.node_id,
+        duration_minutes: config.duration_minutes,
+        question_count: config.question_count,
+        difficulty_mode: config.difficulty_mode,
+      };
   const { data, error } = await getSupabaseAdminClient()
     .from("question_bank_self_exam_sessions")
-    .insert([{ ...config, student_id: studentId, status: "created" }])
+    .insert([{ ...insertPayload, student_id: studentId, status: "created" }])
     .select("*")
     .single();
   throwSupabaseError(error);
@@ -235,35 +255,102 @@ export async function getSelfExamResult(studentId, sessionId) {
 }
 
 async function assertHierarchy(config) {
+  await resolveSelfExamSelection(config);
+}
+
+async function resolveSelfExamSelection(config) {
+  try {
+    await assertNodeSelection(config.node_id);
+    return "node";
+  } catch (error) {
+    if (!isMissingExamHierarchyError(error)) throw error;
+    await assertLegacySelection(config);
+    return "legacy";
+  }
+}
+
+async function assertNodeSelection(nodeId) {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("exam_nodes")
+    .select("id,is_active")
+    .eq("id", nodeId)
+    .single();
+  throwSupabaseError(error);
+  if (!data?.is_active) throwRequest("Selected question bank node is inactive.");
+}
+
+async function assertLegacySelection(config) {
+  const classId = requiredUuid(config.class_id, "Class is required.");
+  const subjectId = requiredUuid(config.subject_id, "Subject is required.");
   const client = getSupabaseAdminClient();
-  const { data: subject, error: subjectError } = await client
+
+  const { data: classRow, error: classError } = await client
+    .from("question_bank_classes")
+    .select("id,is_active")
+    .eq("id", classId)
+    .single();
+  throwSupabaseError(classError);
+  if (!classRow?.is_active) throwRequest("Selected class is inactive.");
+
+  const { data: subjectRow, error: subjectError } = await client
     .from("question_bank_subjects")
-    .select("id,class_id,is_active")
-    .eq("id", config.subject_id)
+    .select("id,is_active")
+    .eq("id", subjectId)
+    .eq("class_id", classId)
     .single();
   throwSupabaseError(subjectError);
-  if (subject.class_id !== config.class_id || !subject.is_active) throwRequest("Subject does not belong to the selected class.");
+  if (!subjectRow?.is_active) throwRequest("Selected subject is inactive.");
+
   if (config.chapter_id) {
-    const { data: chapter, error: chapterError } = await client
+    const { data: chapterRow, error: chapterError } = await client
       .from("question_bank_chapters")
-      .select("id,subject_id,is_active")
+      .select("id,is_active")
       .eq("id", config.chapter_id)
+      .eq("subject_id", subjectId)
       .single();
     throwSupabaseError(chapterError);
-    if (chapter.subject_id !== config.subject_id || !chapter.is_active) throwRequest("Chapter does not belong to the selected subject.");
+    if (!chapterRow?.is_active) throwRequest("Selected chapter is inactive.");
   }
 }
 
 async function fetchEligibleQuestions(session) {
+  if (!session.node_id) return fetchLegacyEligibleQuestions(session);
+
+  let nodeIds = [];
+  try {
+    nodeIds = await collectNodeAndDescendantIds(session.node_id);
+  } catch (error) {
+    if (!isMissingExamHierarchyError(error)) throw error;
+    return fetchLegacyEligibleQuestions(session);
+  }
   let query = getSupabaseAdminClient()
     .from("question_bank_questions")
     .select("id,difficulty,marks")
-    .eq("class_id", session.class_id)
-    .eq("subject_id", session.subject_id)
+    .in("node_id", nodeIds)
+    .eq("status", "active")
+    .eq("question_type", "mcq")
+    .limit(500);
+  if (session.difficulty_mode && session.difficulty_mode !== "mixed") query = query.eq("difficulty", session.difficulty_mode);
+  const { data, error } = await query;
+  try {
+    throwSupabaseError(error);
+  } catch (err) {
+    if (!isMissingExamHierarchyError(err)) throw err;
+    return fetchLegacyEligibleQuestions(session);
+  }
+  return data || [];
+}
+
+async function fetchLegacyEligibleQuestions(session) {
+  let query = getSupabaseAdminClient()
+    .from("question_bank_questions")
+    .select("id,difficulty,marks")
     .eq("status", "active")
     .eq("question_type", "mcq")
     .limit(500);
   if (session.chapter_id) query = query.eq("chapter_id", session.chapter_id);
+  else if (session.subject_id) query = query.eq("subject_id", session.subject_id);
+  else query = query.eq("class_id", session.class_id);
   if (session.difficulty_mode && session.difficulty_mode !== "mixed") query = query.eq("difficulty", session.difficulty_mode);
   const { data, error } = await query;
   throwSupabaseError(error);
@@ -271,6 +358,26 @@ async function fetchEligibleQuestions(session) {
 }
 
 async function fetchSessionQuestions(sessionId, { includeAnswers = false } = {}) {
+  const { data, error } = await getSupabaseAdminClient()
+    .from("question_bank_self_exam_session_questions")
+    .select("display_order,marks,question_bank_questions(id,node_id,question_type,question_text,difficulty,marks,explanation,status,question_bank_question_options(id,option_text,is_correct,display_order))")
+    .eq("session_id", sessionId)
+    .order("display_order", { ascending: true });
+  try {
+    throwSupabaseError(error);
+  } catch (err) {
+    if (!isMissingExamHierarchyError(err)) throw err;
+    return fetchLegacySessionQuestions(sessionId, { includeAnswers });
+  }
+  return (data || []).map((row) => ({
+    ...serializeQuestion(row.question_bank_questions || row.questions, { includeAnswers }),
+    displayOrder: row.display_order,
+    marks: Number(row.marks),
+    ...(includeAnswers ? {} : { explanation: "", source: "" }),
+  }));
+}
+
+async function fetchLegacySessionQuestions(sessionId, { includeAnswers = false } = {}) {
   const { data, error } = await getSupabaseAdminClient()
     .from("question_bank_self_exam_session_questions")
     .select("display_order,marks,question_bank_questions(id,class_id,subject_id,chapter_id,question_type,question_text,difficulty,marks,explanation,status,question_bank_question_options(id,option_text,is_correct,display_order))")
@@ -358,9 +465,10 @@ export function serializeSession(session) {
   return {
     id: session.id,
     studentId: session.student_id,
-    classId: session.class_id,
-    subjectId: session.subject_id,
-    chapterId: session.chapter_id,
+    nodeId: session.node_id || session.chapter_id || session.subject_id || session.class_id,
+    classId: session.class_id || session.node_id,
+    subjectId: session.subject_id || session.node_id,
+    chapterId: session.chapter_id || null,
     durationMinutes: session.duration_minutes,
     questionCount: session.question_count,
     difficultyMode: session.difficulty_mode,
@@ -420,6 +528,13 @@ function normalizeDifficultyMode(value) {
   const normalized = String(value || "mixed").trim().toLowerCase();
   if (!DIFFICULTY_MODES.has(normalized)) throwRequest("Invalid difficulty mode.");
   return normalized;
+}
+
+function isMissingExamHierarchyError(error) {
+  const message = String(error?.message || "");
+  return error?.code === "PGRST205"
+    || error?.code === "PGRST204"
+    || /exam_categories|exam_nodes|node_id|Could not find|migration has not been applied/i.test(message);
 }
 
 function throwRequest(message) {

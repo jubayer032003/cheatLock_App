@@ -12,10 +12,37 @@ import {
 import {
   getChaptersBySubject,
   getClasses,
+  getExamCategories,
+  getExamNodes,
+  getNodePath,
   getSubjectsByClass,
 } from "../services/questionBankService.js";
 
 export const selfExamRouter = express.Router();
+
+selfExamRouter.get("/categories", requireAuth, requireRole("STUDENT"), async (_req, res, next) => {
+  try {
+    res.json({ categories: await getExamCategories() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+selfExamRouter.get("/nodes", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
+  try {
+    res.json({ nodes: await getExamNodes({ categoryId: req.query.categoryId, parentId: req.query.parentId }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+selfExamRouter.get("/nodes/:nodeId/path", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
+  try {
+    res.json({ path: await getNodePath(req.params.nodeId) });
+  } catch (error) {
+    next(error);
+  }
+});
 
 selfExamRouter.get("/classes", requireAuth, requireRole("STUDENT"), async (_req, res, next) => {
   try {

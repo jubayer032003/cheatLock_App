@@ -4,6 +4,11 @@ import { config } from "../config.js";
 import { logger } from "./logger.js";
 
 export async function configureSocketAdapter(io) {
+  if (!config.redis.url) {
+    logger.warn("REDIS_URL is not configured. Socket.IO is using the in-memory adapter for this single-instance deploy.");
+    return async () => {};
+  }
+
   const options = {
     lazyConnect: true,
     maxRetriesPerRequest: 3,
@@ -28,7 +33,10 @@ export async function configureSocketAdapter(io) {
       startupError.cause = error;
       throw startupError;
     }
-    logger.warn("Socket.IO Redis adapter unavailable; development server is limited to one backend instance.");
+    logger.warn("Socket.IO Redis adapter unavailable; server is using the in-memory adapter for this instance.", {
+      errorName: error?.name,
+      message: error?.message,
+    });
     return async () => {};
   }
 

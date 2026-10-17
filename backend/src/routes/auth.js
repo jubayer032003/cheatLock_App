@@ -72,12 +72,13 @@ authRouter.post("/signup", signupRateLimiter, async (req, res, next) => {
 });
 
 authRouter.post("/admin-login", loginRateLimiter, async (req, res, next) => {
+  const timings = createLoginTimings(req, "admin-login");
   try {
     const { identifier: rawIdentifier, email, password, role: rawRole } = req.body;
     const identifier = normalizeIdentifier(rawIdentifier || email);
     const role = String(rawRole || "").toUpperCase().trim();
 
-    logger.debug("Admin login attempt received.", { role, hasIdentifier: Boolean(identifier) });
+    timings.checkpoint("LOGIN_REQUEST_RECEIVED", { role, hasIdentifier: Boolean(identifier) });
 
     if (!identifier || !password || !role) {
       const error = new Error("Identifier/email, password, and admin role are required.");
@@ -92,7 +93,9 @@ authRouter.post("/admin-login", loginRateLimiter, async (req, res, next) => {
       throw error;
     }
 
+    timings.checkpoint("DB_LOOKUP_START");
     const user = await User.findOne({ identifier, role });
+    timings.checkpoint("DB_LOOKUP_END", { found: Boolean(user) });
     if (!user) {
       const error = new Error("Invalid admin credentials.");
       error.status = 401;
@@ -100,13 +103,17 @@ authRouter.post("/admin-login", loginRateLimiter, async (req, res, next) => {
       throw error;
     }
 
-    if (!(await bcrypt.compare(password, user.passwordHash))) {
+    timings.checkpoint("PASSWORD_VERIFY_START");
+    const passwordMatches = await bcrypt.compare(password, user.passwordHash);
+    timings.checkpoint("PASSWORD_VERIFY_END");
+    if (!passwordMatches) {
       const error = new Error("Invalid admin credentials.");
       error.status = 401;
       error.code = "INVALID_ADMIN_CREDENTIALS";
       throw error;
     }
 
+    timings.checkpoint("TOKEN_GENERATION_START");
     const token = jwt.sign(
       {
         sub: user._id.toString(),
@@ -117,25 +124,32 @@ authRouter.post("/admin-login", loginRateLimiter, async (req, res, next) => {
       config.jwt.secret(),
       { expiresIn: config.jwt.expiresIn }
     );
+    timings.checkpoint("TOKEN_GENERATION_END");
 
     res.json({
       token,
       user: serializeUser(user),
     });
 
-    logger.debug("Admin login successful.", { userId: user._id?.toString(), role: user.role });
+    timings.complete("LOGIN_RESPONSE_SENT", { statusCode: res.statusCode, success: true, role: user.role });
   } catch (error) {
+    timings.complete("LOGIN_RESPONSE_SENT", {
+      statusCode: error.status || 500,
+      success: false,
+      code: error.code || "REQUEST_FAILED",
+    });
     next(error);
   }
 });
 
 authRouter.post("/login", loginRateLimiter, async (req, res, next) => {
+  const timings = createLoginTimings(req, "login");
   try {
     const { identifier: rawIdentifier, email, password, role: rawRole } = req.body;
     const identifier = normalizeIdentifier(rawIdentifier || email);
     const role = String(rawRole || "").toUpperCase().trim();
 
-    logger.debug("Login attempt received.", { role, hasIdentifier: Boolean(identifier) });
+    timings.checkpoint("LOGIN_REQUEST_RECEIVED", { role, hasIdentifier: Boolean(identifier) });
 
     if (!identifier || !password || !role) {
       const error = new Error("Identifier/email, password, and role are required.");
@@ -159,36 +173,44 @@ authRouter.post("/login", loginRateLimiter, async (req, res, next) => {
       throw error;
     }
 
+    timings.checkpoint("DB_LOOKUP_START", { strategy: "role" });
     let user = await User.findOne({
       identifier,
       role,
     });
+    timings.checkpoint("DB_LOOKUP_END", { strategy: "role", found: Boolean(user) });
 
     if (!user) {
       const legacyIdentifier = String(rawIdentifier || email || "")
         .trim()
         .toLowerCase();
       if (legacyIdentifier && legacyIdentifier !== identifier) {
+        timings.checkpoint("DB_LOOKUP_START", { strategy: "legacy-role" });
         user = await User.findOne({ identifier: legacyIdentifier, role });
+        timings.checkpoint("DB_LOOKUP_END", { strategy: "legacy-role", found: Boolean(user) });
       }
     }
 
     if (!user) {
       const dashboardRoles = ["SUPER_ADMIN", "INSTITUTION_ADMIN", "DEPARTMENT_ADMIN", "TEACHER", "PROCTOR", "AUDITOR"];
       if (dashboardRoles.includes(role)) {
+        timings.checkpoint("DB_LOOKUP_START", { strategy: "dashboard-role-fallback" });
         user = await User.findOne({
           identifier,
           role: { $in: dashboardRoles }
         });
+        timings.checkpoint("DB_LOOKUP_END", { strategy: "dashboard-role-fallback", found: Boolean(user) });
         if (!user) {
           const legacyIdentifier = String(rawIdentifier || email || "")
             .trim()
             .toLowerCase();
           if (legacyIdentifier && legacyIdentifier !== identifier) {
+            timings.checkpoint("DB_LOOKUP_START", { strategy: "legacy-dashboard-role-fallback" });
             user = await User.findOne({
               identifier: legacyIdentifier,
               role: { $in: dashboardRoles }
             });
+            timings.checkpoint("DB_LOOKUP_END", { strategy: "legacy-dashboard-role-fallback", found: Boolean(user) });
           }
         }
       }
@@ -201,13 +223,17 @@ authRouter.post("/login", loginRateLimiter, async (req, res, next) => {
       throw error;
     }
 
-    if (!(await bcrypt.compare(password, user.passwordHash))) {
+    timings.checkpoint("PASSWORD_VERIFY_START");
+    const passwordMatches = await bcrypt.compare(password, user.passwordHash);
+    timings.checkpoint("PASSWORD_VERIFY_END");
+    if (!passwordMatches) {
       const error = new Error("Invalid credentials.");
       error.status = 401;
       error.code = "INVALID_CREDENTIALS";
       throw error;
     }
 
+    timings.checkpoint("TOKEN_GENERATION_START");
     const token = jwt.sign(
       {
         sub: user._id.toString(),
@@ -218,14 +244,20 @@ authRouter.post("/login", loginRateLimiter, async (req, res, next) => {
       config.jwt.secret(),
       { expiresIn: config.jwt.expiresIn }
     );
+    timings.checkpoint("TOKEN_GENERATION_END");
 
     res.json({
       token,
       user: serializeUser(user),
     });
 
-    logger.debug("Login successful.", { userId: user._id?.toString(), role: user.role });
+    timings.complete("LOGIN_RESPONSE_SENT", { statusCode: res.statusCode, success: true, role: user.role });
   } catch (error) {
+    timings.complete("LOGIN_RESPONSE_SENT", {
+      statusCode: error.status || 500,
+      success: false,
+      code: error.code || "REQUEST_FAILED",
+    });
     next(error);
   }
 });
@@ -289,6 +321,61 @@ authRouter.get("/me", requireAuth, async (req, res, next) => {
       user: serializeUser(user),
     });
   } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.patch("/me", requireAuth, async (req, res, next) => {
+  try {
+    const name = String(req.body?.name || "").trim();
+    const identifier = normalizeIdentifier(req.body?.identifier);
+
+    if (!name || !identifier) {
+      const error = new Error("Name and identifier are required.");
+      error.status = 400;
+      throw error;
+    }
+
+    const existingUser = await User.findOne({
+      identifier,
+      role: req.user.role,
+      _id: { $ne: req.user.sub },
+    }).lean();
+
+    if (existingUser) {
+      const error = new Error("Another account already uses this identifier for the same role.");
+      error.status = 409;
+      throw error;
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.sub,
+      {
+        $set: {
+          name,
+          identifier,
+        },
+      },
+      {
+        new: true,
+        runValidators: true,
+      }
+    ).lean();
+
+    if (!user) {
+      const error = new Error("Account no longer exists.");
+      error.status = 404;
+      throw error;
+    }
+
+    res.json({
+      user: serializeUser(user),
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      error.status = 409;
+      error.message = "Another account already uses this identifier for the same role.";
+    }
     next(error);
   }
 });
@@ -409,6 +496,36 @@ authRouter.post(
 
 function normalizeIdentifier(rawValue) {
   return String(rawValue || "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function createLoginTimings(req, flow) {
+  const startedAt = performance.now();
+  let lastAt = startedAt;
+  let completed = false;
+
+  function log(checkpoint, meta = {}) {
+    const now = performance.now();
+    const durationMs = Math.round(now - lastAt);
+    const totalMs = Math.round(now - startedAt);
+    lastAt = now;
+    logger.info("Auth login timing checkpoint.", {
+      requestId: req.id,
+      flow,
+      checkpoint,
+      durationMs,
+      totalMs,
+      ...meta,
+    });
+  }
+
+  return {
+    checkpoint: log,
+    complete(checkpoint, meta = {}) {
+      if (completed) return;
+      completed = true;
+      log(checkpoint, meta);
+    },
+  };
 }
 
 function serializeUser(user) {

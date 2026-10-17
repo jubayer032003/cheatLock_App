@@ -29,7 +29,7 @@ export function throwSupabaseError(error, fallbackMessage = "Question Bank reque
   const isMissingSchemaObject = error.code === "PGRST205" || /Could not find the table/i.test(error.message || "");
   const requestError = new Error(
     isMissingSchemaObject
-      ? "Question Bank Supabase migration has not been applied. Apply backend/supabase/migrations/202608230001_question_bank_self_exam.sql to the configured Supabase project."
+      ? "Question Bank Supabase migration has not been applied. Apply backend/supabase/migrations/202609020001_exam_hierarchy_question_bank.sql to the configured Supabase project."
       : error.message || fallbackMessage
   );
   requestError.status = isMissingSchemaObject ? 503 : Number(error.status) || 500;

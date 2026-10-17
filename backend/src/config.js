@@ -96,7 +96,7 @@ export const config = {
     expiresIn: readOptional("JWT_EXPIRES_IN", readOptional("NODE_ENV", "development") === "production" ? "1h" : "7d"),
   },
   redis: {
-    url: readOptional("REDIS_URL", "redis://127.0.0.1:6379"),
+    url: readOptional("REDIS_URL"),
   },
   cors: {
     clientOrigin: readOptional("CLIENT_ORIGIN"),
@@ -129,7 +129,11 @@ export function resolveAllowedOrigins({
       continue;
     }
     if (entry === "*") {
-      throw new Error("Wildcard CORS origins are not allowed in production.");
+      if (isProduction) {
+        throw new Error("Wildcard CORS origins are not allowed in production.");
+      }
+      configured.push("*");
+      continue;
     }
     configured.push(normalizeOrigin(entry));
   }
@@ -154,6 +158,10 @@ export function buildCorsOptions() {
         return;
       }
       try {
+        if (allowedOrigins.includes("*")) {
+          callback(null, true);
+          return;
+        }
         const normalized = normalizeOrigin(origin);
         callback(null, allowedOrigins.includes(normalized));
       } catch {

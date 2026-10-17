@@ -13,37 +13,47 @@ const DEFAULT_LIMITS = {
 
 const redisUrl = config.redis.url;
 let redisConnected = false;
+let redis = null;
 
-// Initialize Redis client with reconnection limits
-const redis = new Redis(redisUrl, {
-  maxRetriesPerRequest: 3,
-  lazyConnect: true,
-  retryStrategy: () => null,
-});
-
-redis.connect()
-  .then(() => {
-    redisConnected = true;
-    logger.info("Rate limiter connected to Redis.");
-  })
-  .catch((err) => {
-    redisConnected = false;
-    logger.warn(`Rate limiter Redis connection failed: ${err.message}. Falling back to memory limiter.`);
+if (redisUrl) {
+  redis = new Redis(redisUrl, {
+    maxRetriesPerRequest: 3,
+    lazyConnect: true,
+    retryStrategy: () => null,
   });
 
-redis.on("error", (err) => {
-  if (redisConnected) {
-    logger.error(`Redis connection lost: ${err.message}. Switching to memory limiter fallback.`);
-    redisConnected = false;
-  }
-});
+  redis.connect()
+    .then(() => {
+      redisConnected = true;
+      logger.info("Rate limiter connected to Redis.");
+    })
+    .catch((err) => {
+      redisConnected = false;
+      logger.warn("Rate limiter Redis connection failed. Falling back to memory limiter.", {
+        errorName: err.name,
+        errorCode: err.code,
+      });
+    });
 
-redis.on("ready", () => {
-  if (!redisConnected) {
-    logger.info("Redis server reconnected. Restoring Redis rate limiting.");
-    redisConnected = true;
-  }
-});
+  redis.on("error", (err) => {
+    if (redisConnected) {
+      logger.error("Redis connection lost. Switching to memory limiter fallback.", {
+        errorName: err.name,
+        errorCode: err.code,
+      });
+      redisConnected = false;
+    }
+  });
+
+  redis.on("ready", () => {
+    if (!redisConnected) {
+      logger.info("Redis server reconnected. Restoring Redis rate limiting.");
+      redisConnected = true;
+    }
+  });
+} else {
+  logger.info("REDIS_URL is not configured. Rate limiter is using memory storage.");
+}
 
 const memoryHistory = new Map();
 

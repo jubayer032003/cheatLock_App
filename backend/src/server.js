@@ -93,18 +93,22 @@ configureProctoringSocket(io);
 
 app.use((err, req, res, _next) => {
   const status = err.status || 500;
+  const code = err.code || (status === 500 ? "SERVER_ERROR" : "REQUEST_FAILED");
+  const isOperationalError = Boolean(err.status || err.code);
+  const message = config.nodeEnv === "production" && status >= 500 && !isOperationalError
+    ? "Server error"
+    : err.message || "Server error";
   logger.error("Request failed.", {
     statusCode: status,
     requestId: req.id,
     method: req.method,
     path: req.path,
-    code: err.code || "REQUEST_FAILED",
+    code,
+    message: err.message,
   });
   res.status(status).json({
-    code: err.code || (status === 500 ? "SERVER_ERROR" : "REQUEST_FAILED"),
-    message: config.nodeEnv === "production" && status >= 500
-      ? "Server error"
-      : err.message || "Server error",
+    code,
+    message,
   });
 });
 

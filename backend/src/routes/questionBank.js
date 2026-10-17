@@ -4,19 +4,31 @@ import { Exam } from "../models/Exam.js";
 import {
   createChapter,
   createClass,
+  createExamNode,
   createQuestion,
   createSubject,
+  deleteClass,
+  deleteExamNode,
+  deleteQuestion,
   getChaptersBySubject,
   getClasses,
+  getExamCategories,
+  getExamNodes,
+  getExamTree,
+  getNodePath,
   getQuestionPreview,
   getSubjectsByClass,
+  importChapterQuestions,
+  previewChapterQuestionImport,
   searchQuestions,
   setChapterStatus,
   setClassStatus,
+  setExamNodeStatus,
   setQuestionStatus,
   setSubjectStatus,
   updateChapter,
   updateClass,
+  updateExamNode,
   updateQuestion,
   updateSubject,
 } from "../services/questionBankService.js";
@@ -25,6 +37,86 @@ export const questionBankRouter = express.Router();
 
 const ADMIN_ROLES = ["SUPER_ADMIN", "INSTITUTION_ADMIN", "DEPARTMENT_ADMIN"];
 const STAFF_ROLES = [...ADMIN_ROLES, "TEACHER"];
+
+questionBankRouter.get("/admin/tree", requireAuth, requireRole(ADMIN_ROLES), async (_req, res, next) => {
+  try {
+    res.json({ tree: await getExamTree({ includeInactive: true }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.get("/admin/categories", requireAuth, requireRole(ADMIN_ROLES), async (_req, res, next) => {
+  try {
+    res.json({ categories: await getExamCategories({ includeInactive: true }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.get("/admin/nodes", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json({ nodes: await getExamNodes({ categoryId: req.query.categoryId, parentId: req.query.parentId, includeInactive: true }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.post("/admin/nodes", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.status(201).json({ node: await createExamNode(req.body, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.put("/admin/nodes/:nodeId", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json({ node: await updateExamNode(req.params.nodeId, req.body, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.patch("/admin/nodes/:nodeId/status", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json({ node: await setExamNodeStatus(req.params.nodeId, req.body?.isActive, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.delete("/admin/nodes/:nodeId", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json({ deleted: await deleteExamNode(req.params.nodeId, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.get("/categories", requireAuth, requireRole(STAFF_ROLES), async (_req, res, next) => {
+  try {
+    res.json({ categories: await getExamCategories() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.get("/nodes", requireAuth, requireRole(STAFF_ROLES), async (req, res, next) => {
+  try {
+    res.json({ nodes: await getExamNodes({ categoryId: req.query.categoryId, parentId: req.query.parentId }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.get("/nodes/:nodeId/path", requireAuth, requireRole(STAFF_ROLES), async (req, res, next) => {
+  try {
+    res.json({ path: await getNodePath(req.params.nodeId) });
+  } catch (error) {
+    next(error);
+  }
+});
 
 questionBankRouter.get("/admin/classes", requireAuth, requireRole(ADMIN_ROLES), async (_req, res, next) => {
   try {
@@ -53,6 +145,14 @@ questionBankRouter.put("/admin/classes/:classId", requireAuth, requireRole(ADMIN
 questionBankRouter.patch("/admin/classes/:classId/status", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
   try {
     res.json({ class: await setClassStatus(req.params.classId, req.body?.isActive, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.delete("/admin/classes/:classId", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json({ deleted: await deleteClass(req.params.classId, req.user.identifier) });
   } catch (error) {
     next(error);
   }
@@ -90,6 +190,14 @@ questionBankRouter.patch("/admin/subjects/:subjectId/status", requireAuth, requi
   }
 });
 
+questionBankRouter.delete("/admin/subjects/:subjectId", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json({ deleted: await deleteExamNode(req.params.subjectId, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 questionBankRouter.get("/admin/subjects/:subjectId/chapters", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
   try {
     res.json({ chapters: await getChaptersBySubject(req.params.subjectId, { includeInactive: true }) });
@@ -117,6 +225,40 @@ questionBankRouter.put("/admin/chapters/:chapterId", requireAuth, requireRole(AD
 questionBankRouter.patch("/admin/chapters/:chapterId/status", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
   try {
     res.json({ chapter: await setChapterStatus(req.params.chapterId, req.body?.isActive, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.delete("/admin/chapters/:chapterId", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json({ deleted: await deleteExamNode(req.params.chapterId, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.post("/admin/chapters/:chapterId/import-preview", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const preview = await previewChapterQuestionImport({
+      chapterId: req.params.chapterId,
+      fileContent: req.body?.fileContent,
+      fileType: req.body?.fileType,
+    });
+    res.json(preview);
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.post("/admin/chapters/:chapterId/import", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const result = await importChapterQuestions({
+      chapterId: req.params.chapterId,
+      questions: req.body?.questions,
+      adminId: req.user.identifier,
+    });
+    res.status(201).json(result);
   } catch (error) {
     next(error);
   }
@@ -212,6 +354,14 @@ questionBankRouter.put("/questions/:questionId", requireAuth, requireRole(ADMIN_
 questionBankRouter.patch("/questions/:questionId/status", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
   try {
     res.json({ question: await setQuestionStatus(req.params.questionId, req.body?.status, req.user.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+questionBankRouter.delete("/questions/:questionId", requireAuth, requireRole(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json({ deleted: await deleteQuestion(req.params.questionId, req.user.identifier) });
   } catch (error) {
     next(error);
   }
