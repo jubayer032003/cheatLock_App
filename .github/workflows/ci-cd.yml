@@ -45,6 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: secret-scan
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: "true"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -117,7 +119,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
