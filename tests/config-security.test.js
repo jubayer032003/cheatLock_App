@@ -65,6 +65,7 @@ test("local development can validate with user-provided env and S3 disabled", as
       const { config, validateStartupConfig } = await freshConfigImport();
       assert.doesNotThrow(() => validateStartupConfig());
       assert.equal(config.s3().enabled, false);
+      assert.equal(config.redis.url, "");
     }
   );
 });

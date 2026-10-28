@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpCenter
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -32,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import android.Manifest
 import android.content.pm.PackageManager
+import android.provider.Settings
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,6 +61,16 @@ fun AdminDashboardScreen(
     onLogout: () -> Unit,
     onRefresh: suspend () -> Unit
 ) {
+    val motionContext = LocalContext.current
+    val reducedMotion = remember {
+        runCatching {
+            Settings.Global.getFloat(
+                motionContext.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        }.getOrDefault(false)
+    }
     var showClearConfirm by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableStateOf(TeacherTab.Dashboard) }
     var isRefreshing by remember { mutableStateOf(false) }
@@ -184,7 +196,12 @@ fun AdminDashboardScreen(
 
                         AnimatedContent(
                             targetState = selectedTab,
-                            transitionSpec = { cheatLockTabTransition(forward = targetState.ordinal >= initialState.ordinal) },
+                            transitionSpec = {
+                                cheatLockTabTransition(
+                                    forward = targetState.ordinal >= initialState.ordinal,
+                                    reducedMotion = reducedMotion
+                                )
+                            },
                             label = "teacher-tabs"
                         ) { tab ->
                             Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -420,7 +437,7 @@ fun ExamCreatorCard(teacherClasses: List<TeacherClass>, onCreateExam: suspend (E
                         value = questionText,
                         onValueChange = { questionText = it },
                         label = "Inquiry Text",
-                        leadingIcon = Icons.Default.HelpCenter,
+                        leadingIcon = Icons.AutoMirrored.Filled.HelpCenter,
                         singleLine = false,
                         trailingIcon = {
                             IconButton(onClick = {
@@ -615,7 +632,7 @@ fun ClassManagerCard(classes: List<TeacherClass>, onSave: suspend (TeacherClass)
             }
 
             if (classes.isNotEmpty()) {
-                Divider(color = Color.White.copy(0.05f))
+                HorizontalDivider(color = Color.White.copy(0.05f))
                 classes.forEach { cls ->
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Column {

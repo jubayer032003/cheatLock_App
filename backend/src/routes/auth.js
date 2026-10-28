@@ -4,14 +4,40 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { loginRateLimiter, passwordResetRateLimiter, signupRateLimiter } from "../middleware/rateLimiter.js";
+import { createRateLimiter, loginRateLimiter, passwordResetRateLimiter, signupRateLimiter } from "../middleware/rateLimiter.js";
 import { User } from "../models/User.js";
 import { logger } from "../services/logger.js";
 import { deleteStudentAccount } from "../services/accountDeletion.js";
+import { rememberedSessions, hashSessionToken } from "../services/rememberedSessions.js";
 
 export const authRouter = express.Router();
 
 const ADMIN_LOGIN_ROLES = ["SUPER_ADMIN", "INSTITUTION_ADMIN", "DEPARTMENT_ADMIN"];
+const sessionLimiter = createRateLimiter("remembered-session", { windowMs: 60_000, max: 30 },
+  (req) => `${req.ip}:${hashSessionToken(typeof req.body?.refreshToken === "string" ? req.body.refreshToken.slice(0, 128) : "")}`);
+
+authRouter.post("/refresh", sessionLimiter, async (req, res, next) => {
+  try {
+    const result = await rememberedSessions.refresh(req.body?.refreshToken);
+    res.set("Cache-Control", "no-store").json({ ...result, user: serializeUser(result.user) });
+  } catch (error) { next(error); }
+});
+
+authRouter.post("/logout", sessionLimiter, async (req, res, next) => {
+  try {
+    await rememberedSessions.revoke(req.body?.refreshToken);
+    res.status(204).send();
+  } catch (error) { next(error); }
+});
+
+// Upgrade an existing, still-valid login after the app receives this feature.
+authRouter.post("/session", requireAuth, sessionLimiter, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.sub).lean();
+    const remembered = await rememberedSessions.issue(user);
+    res.set("Cache-Control", "no-store").json({ ...remembered });
+  } catch (error) { next(error); }
+});
 
 authRouter.post("/signup", signupRateLimiter, async (req, res, next) => {
   try {
@@ -62,9 +88,10 @@ authRouter.post("/signup", signupRateLimiter, async (req, res, next) => {
       { expiresIn: config.jwt.expiresIn }
     );
 
-    res.status(201).json({
+    res.set("Cache-Control", "no-store").status(201).json({
       token,
       user: serializeUser(user),
+      ...(req.body.rememberDevice === true ? await rememberedSessions.issue(user) : {}),
     });
   } catch (error) {
     next(error);
@@ -126,9 +153,10 @@ authRouter.post("/admin-login", loginRateLimiter, async (req, res, next) => {
     );
     timings.checkpoint("TOKEN_GENERATION_END");
 
-    res.json({
+    res.set("Cache-Control", "no-store").json({
       token,
       user: serializeUser(user),
+      ...(req.body.rememberDevice === true ? await rememberedSessions.issue(user) : {}),
     });
 
     timings.complete("LOGIN_RESPONSE_SENT", { statusCode: res.statusCode, success: true, role: user.role });
@@ -246,9 +274,10 @@ authRouter.post("/login", loginRateLimiter, async (req, res, next) => {
     );
     timings.checkpoint("TOKEN_GENERATION_END");
 
-    res.json({
+    res.set("Cache-Control", "no-store").json({
       token,
       user: serializeUser(user),
+      ...(req.body.rememberDevice === true ? await rememberedSessions.issue(user) : {}),
     });
 
     timings.complete("LOGIN_RESPONSE_SENT", { statusCode: res.statusCode, success: true, role: user.role });

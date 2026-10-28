@@ -5,8 +5,10 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import com.jubayer.cheatlock.ui.CrashRecoveryScreen
+import com.jubayer.cheatlock.util.CrashSupportCode
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import android.view.WindowManager
@@ -34,9 +36,14 @@ import androidx.core.content.ContextCompat
 import com.jubayer.cheatlock.data.ExamStorage
 import com.jubayer.cheatlock.data.MongoBackendRepository
 import com.jubayer.cheatlock.data.ProctoringEventRequest
+import com.jubayer.cheatlock.proctoring.MonitoringSnapshotSource
 import com.jubayer.cheatlock.data.SelfExamStorage
 import com.jubayer.cheatlock.model.Exam
 import com.jubayer.cheatlock.model.ExamQuestion
+import com.jubayer.cheatlock.model.ExamAttemptKey
+import com.jubayer.cheatlock.model.MonitoringControl
+import com.jubayer.cheatlock.model.monitoringControl
+import com.jubayer.cheatlock.data.BackendRequestException
 import com.jubayer.cheatlock.model.ExamSubmission
 import com.jubayer.cheatlock.model.StudentAnswer
 import com.jubayer.cheatlock.model.ExamSession
@@ -44,6 +51,8 @@ import com.jubayer.cheatlock.model.ExamSessionStatus
 import com.jubayer.cheatlock.model.ExamFinishReason
 import com.jubayer.cheatlock.model.ExamStatus
 import com.jubayer.cheatlock.model.QuestionType
+import com.jubayer.cheatlock.model.TeacherExamStartupProblem
+import com.jubayer.cheatlock.model.teacherExamStartupIssue
 import com.jubayer.cheatlock.model.TeacherClass
 import com.jubayer.cheatlock.model.UserAccount
 import com.jubayer.cheatlock.model.UserRole
@@ -55,10 +64,12 @@ import com.jubayer.cheatlock.model.SelfExamResultResponse
 import com.jubayer.cheatlock.notifications.StudentNotificationHelper
 import com.jubayer.cheatlock.security.ExamSecurityController
 import com.jubayer.cheatlock.ui.AdminDashboardScreen
+import com.jubayer.cheatlock.ui.AppUiPreferences
 import com.jubayer.cheatlock.ui.HomeScreen
 import com.jubayer.cheatlock.ui.SelfExamResultScreen
 import com.jubayer.cheatlock.ui.SelfExamSetupScreen
 import com.jubayer.cheatlock.ui.cheatLockScreenTransition
+import com.jubayer.cheatlock.ui.cheatLockSplashTransition
 import com.jubayer.cheatlock.util.BackendConnectionProbe
 import com.jubayer.cheatlock.util.BackendUrlStore
 import com.jubayer.cheatlock.util.SuspicionScoreCalculator
@@ -85,6 +96,18 @@ private enum class AppRootScreen {
     SelfExamResult
 }
 
+private fun AppRootScreen.motionOrder(): Int = when (this) {
+    AppRootScreen.Splash -> 0
+    AppRootScreen.Home -> 1
+    AppRootScreen.Login -> 2
+    AppRootScreen.Student -> 3
+    AppRootScreen.Teacher -> 3
+    AppRootScreen.SelfExamSetup -> 4
+    AppRootScreen.Exam -> 5
+    AppRootScreen.SelfExamResult -> 6
+    AppRootScreen.Result -> 6
+}
+
 class MainActivity : FragmentActivity() {
 
     private var isExamRunning = false
@@ -93,7 +116,8 @@ class MainActivity : FragmentActivity() {
     private var onScreenCaptureAttempt: (() -> Unit)? = null
     private lateinit var examSecurity: ExamSecurityController
     private var pendingScreenCaptureStart: (() -> Unit)? = null
-    private var screenSnapshotSender: ((String) -> Unit)? = null
+    @Volatile
+    private var screenSnapshotSender: ((String, Long) -> Unit)? = null
     private var screenCaptureDeniedHandler: ((String) -> Unit)? = null
     private var pendingMonitoringPermissionResult: ((Boolean) -> Unit)? = null
 
@@ -118,26 +142,48 @@ class MainActivity : FragmentActivity() {
             val onReady = pendingScreenCaptureStart
             pendingScreenCaptureStart = null
 
+            if (onReady == null) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                return@registerForActivityResult
+            }
             val data = result.data
             Log.d("CHEATLOCK_FLOW", "MediaProjection result returned. Code: ${result.resultCode}, HasData: ${data != null}")
 
             if (result.resultCode != Activity.RESULT_OK || data == null) {
                 Log.w("CHEATLOCK_FLOW", "MediaProjection consent denied by user or returned null data.")
                 screenCaptureDeniedHandler?.invoke(
-                    "Screen sharing was not allowed. Exam will continue with camera monitoring only."
+                    getString(R.string.screen_capture_required)
                 )
-                runOnUiThread {
-                    onReady?.invoke()
-                }
+
                 return@registerForActivityResult
             }
 
             Log.d("CHEATLOCK_FLOW", "MediaProjection consent granted. Starting ScreenCaptureService.")
-            // Start the service immediately after consent to comply with Android 14+ FGS restrictions.
+            val readyCallback: () -> Unit = {
+                runOnUiThread {
+                    ScreenCaptureCallbacks.onReady = null
+                    ScreenCaptureCallbacks.onStartFailure = null
+                    onReady.invoke()
+                }
+            }
+            ScreenCaptureCallbacks.onReady = readyCallback
+            ScreenCaptureCallbacks.onStartFailure = { message ->
+                runOnUiThread {
+                    ScreenCaptureCallbacks.onReady = null
+                    ScreenCaptureCallbacks.onStartFailure = null
+                    screenCaptureDeniedHandler?.invoke(message)
+                }
+            }
+            window.decorView.postDelayed({
+                if (ScreenCaptureCallbacks.onReady === readyCallback) {
+                    ScreenCaptureCallbacks.onStartFailure?.invoke(getString(R.string.screen_capture_start_failed))
+                }
+            }, 15_000L)            // Start the service immediately after consent to comply with Android 14+ FGS restrictions.
             runCatching {
-                ScreenCaptureCallbacks.onSnapshot = { snapshot ->
+                ScreenCaptureCallbacks.onSnapshot = { snapshot, capturedAt ->
+                    val sender = screenSnapshotSender
                     runOnUiThread {
-                        screenSnapshotSender?.invoke(snapshot)
+                        sender?.invoke(snapshot, capturedAt)
                     }
                 }
                 ScreenCaptureService.startProjection(
@@ -148,28 +194,28 @@ class MainActivity : FragmentActivity() {
             }.onFailure { error ->
                 Log.e("CHEATLOCK_FLOW", "Screen capture service start failed", error)
                 ScreenCaptureCallbacks.onSnapshot = null
+        ScreenCaptureCallbacks.onReady = null
+        ScreenCaptureCallbacks.onStartFailure = null
                 runCatching { ScreenCaptureService.stop(this) }
                 screenCaptureDeniedHandler?.invoke(
-                    "Screen sharing unavailable. Exam will continue with camera monitoring only."
+                    getString(R.string.screen_capture_start_failed)
                 )
             }
             
             // Re-apply FLAG_SECURE after system dialog is gone
             window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
-            // Allow a tiny window for the service to bind and show notification before UI transition
-            window.decorView.postDelayed({
-                onReady?.invoke()
-            }, 300L) // Increased to 300ms for system dialog cleanup
+            // Resume only when ScreenCaptureService has initialized the virtual display.
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         Log.d("CHEATLOCK_FLOW", "MainActivity onCreate: App starting. Manufacturer: ${Build.MANUFACTURER}, Model: ${Build.MODEL}, OS: Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         
         val isCrashRecovery = intent?.getBooleanExtra("crash_recovery", false) ?: false
-        val crashDetails = intent?.getStringExtra("error_details").orEmpty()
+        val crashSupportCode = CrashSupportCode.sanitize(intent?.getStringExtra("crash_support_code"))
 
         super.onCreate(savedInstanceState)
+        AppUiPreferences.applyLanguage(this, AppUiPreferences.getLanguage(this))
 
         // Global Exception Logger and Recovery Handler
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
@@ -192,6 +238,7 @@ class MainActivity : FragmentActivity() {
 
                 val intent = Intent(this, MainActivity::class.java).apply {
                     putExtra("crash_recovery", true)
+                    putExtra("crash_support_code", CrashSupportCode.from(throwable))
                     putExtra("error_details", errorReport)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 }
@@ -218,11 +265,29 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             var showCrashRecovery by remember { mutableStateOf(isCrashRecovery) }
+            var appLanguage by remember { mutableStateOf(AppUiPreferences.getLanguage(this@MainActivity)) }
+            var appThemeMode by remember { mutableStateOf(AppUiPreferences.getThemeMode(this@MainActivity)) }
+            val darkTheme = with(AppUiPreferences) { appThemeMode.isDarkTheme() }
 
-            CheatLockTheme(darkTheme = true) {
+            val locale = remember(appLanguage) { java.util.Locale.forLanguageTag(appLanguage.code) }
+            val configuration = remember(appLanguage) {
+                android.content.res.Configuration(resources.configuration).apply {
+                    setLocale(locale)
+                    setLocales(android.os.LocaleList(locale))
+                }
+            }
+            val localizedContext = remember(appLanguage) {
+                this@MainActivity.createConfigurationContext(configuration)
+            }
+
+            CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalConfiguration provides configuration,
+                androidx.compose.ui.platform.LocalContext provides localizedContext
+            ) {
+                CheatLockTheme(darkTheme = darkTheme) {
                 if (showCrashRecovery) {
                     CrashRecoveryScreen(
-                        errorDetails = crashDetails,
+                        supportCode = crashSupportCode,
                         onRetry = {
                             showCrashRecovery = false
                             val intent = Intent(this@MainActivity, MainActivity::class.java).apply {
@@ -240,6 +305,15 @@ class MainActivity : FragmentActivity() {
                 }
                 val mongoBackendRepository = remember(apiBaseUrl) {
                     MongoBackendRepository(this@MainActivity, apiBaseUrl)
+                }
+                val reducedMotion = remember {
+                    runCatching {
+                        Settings.Global.getFloat(
+                            contentResolver,
+                            Settings.Global.ANIMATOR_DURATION_SCALE,
+                            1f
+                        ) == 0f
+                    }.getOrDefault(false)
                 }
 
                 var showSplashScreen by remember { mutableStateOf(true) }
@@ -260,6 +334,7 @@ class MainActivity : FragmentActivity() {
                 var sessions by remember { mutableStateOf(emptyList<ExamSession>()) }
                 var exams by remember { mutableStateOf(emptyList<Exam>()) }
                 var activeExam by remember { mutableStateOf<Exam?>(null) }
+                var activeTeacherSession by remember { mutableStateOf<ExamSession?>(null) }
                 var studentAccount by remember { mutableStateOf<UserAccount?>(null) }
                 var studentSubScreen by remember { mutableStateOf<AppRootScreen?>(null) }
                 var activeSelfExamPayload by remember { mutableStateOf<SelfExamPayloadResponse?>(null) }
@@ -376,30 +451,31 @@ class MainActivity : FragmentActivity() {
                     )
                 }
 
-                fun sendPreviewSnapshot(snapshot: String, latestAlert: String? = null) {
-                    val examId = activeExam?.id
+                fun sendPreviewSnapshot(snapshot: String, snapshotAttempt: ScoreAttempt?, source: MonitoringSnapshotSource = MonitoringSnapshotSource.CAMERA, capturedAtMillis: Long? = null) {
+                    val examId = snapshotAttempt?.examId
+                    if (snapshotAttempt == null || snapshotAttempt != activeScoreAttempt || snapshotAttempt.startedAt == null) return
+                    if (capturedAtMillis != null && capturedAtMillis < snapshotAttempt.startedAt) return
                     if (BuildConfig.ENABLE_RUNTIME_TRACING) {
                         Log.d("RUNTIME_TRACE", "[Step 3] MainActivity: sendPreviewSnapshot. Event: camera_preview_updated. examId: $examId, studentId: $studentId. Payload size: ${snapshot.length}. Timestamp: ${System.currentTimeMillis()}")
                     }
                     examId?.let { id ->
                         val sequence = evidenceSequenceNumber++
-                        val now = java.time.Instant.now().toString()
+                        val capturedAt = capturedAtMillis?.let { java.time.Instant.ofEpochMilli(it).toString() }
                         val evidenceId = "android-$id-$studentId-${UUID.randomUUID()}"
                         scope.launch {
                             runCatching {
                                 mongoBackendRepository.sendProctoringEvent(
                                     ProctoringEventRequest(
-                                        eventName = "camera_preview_updated",
+                                        eventName = source.eventName,
                                         examId = id,
+                                        attemptStartedAt = snapshotAttempt.startedAt,
                                         idempotencyKey = evidenceId,
                                         evidenceId = evidenceId,
                                         sequenceNumber = sequence,
-                                        capturedAt = now,
-                                        captureStartedAt = now,
-                                        captureCompletedAt = now,
-                                        processingCompletedAt = now,
-                                        latestAlert = latestAlert,
-                                        previewBase64 = snapshot
+                                        capturedAt = capturedAt,
+                                        captureSource = source.wireName,
+                                        previewBase64 = if (source == MonitoringSnapshotSource.CAMERA) snapshot else null,
+                                        base64 = if (source == MonitoringSnapshotSource.SCREEN) snapshot else null
                                     )
                                 )
                             }
@@ -410,32 +486,32 @@ class MainActivity : FragmentActivity() {
                 suspend fun awaitScreenCaptureConsent() {
                     Log.d("CHEATLOCK_FLOW", "awaitScreenCaptureConsent: Initiating Screen Capture Dialog.")
                     suspendCancellableCoroutine { continuation ->
-                        pendingScreenCaptureStart = {
-                            if (continuation.isActive) {
-                                continuation.resume(Unit)
+                        val completeStart: () -> Unit = {
+                            if (continuation.isActive) continuation.resume(Unit)
+                        }
+                        val failStart: (String) -> Unit = { message ->
+                            authMessage = message
+                            if (continuation.isActive) continuation.resumeWith(Result.failure(IllegalStateException(message)))
+                        }
+                        pendingScreenCaptureStart = completeStart
+                        screenSnapshotSender = null
+                        screenCaptureDeniedHandler = failStart
+                        continuation.invokeOnCancellation {
+                            runOnUiThread {
+                                if (pendingScreenCaptureStart === completeStart || screenCaptureDeniedHandler === failStart) {
+                                    pendingScreenCaptureStart = null
+                                    screenCaptureDeniedHandler = null
+                                    stopScreenCapture()
+                                }
                             }
                         }
-                        screenSnapshotSender = { snapshot ->
-                            sendPreviewSnapshot(
-                                snapshot = snapshot,
-                                latestAlert = "Student screen preview updated."
-                            )
-                        }
-                        screenCaptureDeniedHandler = { message ->
-                            authMessage = message
-                        }
-
-                        continuation.invokeOnCancellation {
-                            pendingScreenCaptureStart = null
-                        }
-
                         val projectionManager = getSystemService(MediaProjectionManager::class.java)
                         if (projectionManager == null) {
                             Log.e("CHEATLOCK_FLOW", "awaitScreenCaptureConsent: MediaProjectionManager is not available on this device.")
                             pendingScreenCaptureStart = null
-                            authMessage = "Screen sharing is not supported on this device."
+                            authMessage = getString(R.string.screen_capture_start_failed)
                             if (continuation.isActive) {
-                                continuation.resume(Unit)
+                                continuation.resumeWith(Result.failure(IllegalStateException(getString(R.string.screen_capture_start_failed))))
                             }
                             return@suspendCancellableCoroutine
                         }
@@ -453,9 +529,9 @@ class MainActivity : FragmentActivity() {
 
                             pendingScreenCaptureStart = null
                             authMessage =
-                                "Could not request screen sharing. Exam will continue with camera monitoring only."
+                                getString(R.string.screen_capture_start_failed)
                             if (continuation.isActive) {
-                                continuation.resume(Unit)
+                                continuation.resumeWith(Result.failure(IllegalStateException(getString(R.string.screen_capture_start_failed))))
                             }
                         }
                     }
@@ -553,6 +629,43 @@ class MainActivity : FragmentActivity() {
                     else -> AppRootScreen.Login
                 }
 
+                LaunchedEffect(rootScreen, activeScoreAttempt, activeSelfExamPayload) {
+                    val attempt = activeScoreAttempt ?: return@LaunchedEffect
+                    if (rootScreen != AppRootScreen.Exam || activeSelfExamPayload != null || attempt.startedAt == null) return@LaunchedEffect
+                    while (isExamRunning && activeScoreAttempt == attempt) {
+                        delay(10_000)
+                        if (isExamFinishing) continue
+                        try {
+                            mongoBackendRepository.sendProctoringEvent(
+                                ProctoringEventRequest(
+                                    eventName = "student_heartbeat",
+                                    examId = attempt.examId,
+                                    attemptStartedAt = attempt.startedAt
+                                )
+                            )
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            when (monitoringControl((failure as? BackendRequestException)?.backendCode)) {
+                                MonitoringControl.END_EXAM -> activeExam = activeExam?.copy(status = ExamStatus.ENDED)
+                                MonitoringControl.RESET_ATTEMPT, MonitoringControl.LOCKED_ATTEMPT -> {
+                                    val locked = monitoringControl((failure as? BackendRequestException)?.backendCode) == MonitoringControl.LOCKED_ATTEMPT
+                                    stopScreenCapture()
+                                    isExamRunning = false
+                                    isExamFinishing = false
+                                    isLoggedIn = false
+                                    isExamSubmitted = false
+                                    activeScoreAttempt = null
+                                    activeTeacherSession = null
+                                    activeExam = null
+                                    authMessage = getString(if (locked) R.string.teacher_attempt_locked else R.string.teacher_attempt_reset)
+                                    break
+                                }
+                                MonitoringControl.KEEP_RUNNING -> Log.w("CHEATLOCK_FLOW", "Exam heartbeat unavailable: ${failure.javaClass.simpleName}")
+                            }
+                        }
+                    }
+                }
                 LaunchedEffect(rootScreen, isLoggedIn, isExamSubmitted) {
                     currentScreenState = rootScreen.name
                     Log.d("CHEATLOCK_FLOW", "Navigation transition to screen: ${rootScreen.name}")
@@ -571,7 +684,16 @@ class MainActivity : FragmentActivity() {
 
                 AnimatedContent(
                     targetState = rootScreen,
-                    transitionSpec = { cheatLockScreenTransition() },
+                    transitionSpec = {
+                        if (initialState == AppRootScreen.Splash) {
+                            cheatLockSplashTransition(reducedMotion)
+                        } else {
+                            cheatLockScreenTransition(
+                                forward = targetState.motionOrder() >= initialState.motionOrder(),
+                                reducedMotion = reducedMotion
+                            )
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background),
@@ -602,7 +724,12 @@ class MainActivity : FragmentActivity() {
                                     showSplashScreen = false
                                 },
                                 onValidateSession = { url ->
-                                    MongoBackendRepository(this@MainActivity, url).validateSession()
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        // Reuse the repository and its HTTP client on the normal path.
+                                        val repository = if (url == apiBaseUrl) mongoBackendRepository
+                                            else MongoBackendRepository(this@MainActivity, url)
+                                        repository.validateSession()
+                                    }
                                 }
                             )
                         }
@@ -629,6 +756,16 @@ class MainActivity : FragmentActivity() {
                                 },
                                 onOpenTerms = {
                                     openConfiguredPublicUrl(BuildConfig.TERMS_URL, "Terms URL has not been configured.")
+                                },
+                                appLanguage = appLanguage,
+                                onLanguageChange = { language ->
+                                    AppUiPreferences.setLanguage(this@MainActivity, language)
+                                    appLanguage = language
+                                },
+                                appThemeMode = appThemeMode,
+                                onThemeModeChange = { mode ->
+                                    AppUiPreferences.setThemeMode(this@MainActivity, mode)
+                                    appThemeMode = mode
                                 }
                             )
                         }
@@ -789,9 +926,9 @@ class MainActivity : FragmentActivity() {
                             }
                         },
                         onUpdateProfile = { newName, newId ->
-                            // Update local and potential backend profile
-                            // For now, updating local account reference
-                            studentAccount = studentAccount?.copy(name = newName, identifier = newId)
+                            val updatedAccount = mongoBackendRepository.updateProfile(newName, newId)
+                            studentAccount = updatedAccount
+                            studentId = updatedAccount.identifier
                         },
                         onHasFaceProfile = {
                             mongoBackendRepository.hasFaceProfile()
@@ -802,11 +939,31 @@ class MainActivity : FragmentActivity() {
 
                         AppRootScreen.Result -> {
                     isExamRunning = false
-                    BackHandler {
+                    fun returnToStudentDashboard() {
+                        stopScreenCapture()
+                        isLoggedIn = false
+                        isAdminMode = false
+                        isExamRunning = false
+                        activeScoreAttempt = null
+                        studentSubScreen = null
+                        activeSelfExamPayload = null
+                        selfExamResult = null
                         isExamSubmitted = false
-                        gradedSubmission = null
+                        studentId = studentAccount?.identifier.orEmpty()
                         activeExam = null
+                        finalAnswers = emptyList()
+                        gradedSubmission = null
+                        warningCount = 0
+                        finalFaceWarnings = 0
+                        audioWarnings = 0
+                        phoneWarnings = 0
+                        authoritativeSuspicionScore = 0
                         authMessage = null
+                        examStorage.clearExam()
+                        selfExamStorage.clearActiveSessionId()
+                    }
+                    BackHandler {
+                        returnToStudentDashboard()
                     }
                     ResultScreen(
                         studentId = studentId,
@@ -820,40 +977,27 @@ class MainActivity : FragmentActivity() {
                         gradedAt = gradedSubmission?.gradedAt,
                         answers = finalAnswers,
                         onBackToLogin = {
-                            stopScreenCapture()
-                            mongoBackendRepository.logout()
-                            isLoggedIn = false
-                            isAdminMode = false
-                            isExamRunning = false
-                            activeScoreAttempt = null
-                            studentSubScreen = null
-                            activeSelfExamPayload = null
-                            selfExamResult = null
-                            studentAccount = null
-                            isExamSubmitted = false
-                            studentId = ""
-                            finalAnswers = emptyList()
-                            gradedSubmission = null
-                            warningCount = 0
-                            finalFaceWarnings = 0
-                            audioWarnings = 0
-                            phoneWarnings = 0
-                            examStorage.clearExam()
-                            selfExamStorage.clearActiveSessionId()
-                            showHomeScreen = true
+                            returnToStudentDashboard()
                         }
                     )
                         }
 
                         AppRootScreen.Exam -> {
                     isExamRunning = true
+                    val renderedAttempt = activeScoreAttempt
 
                     ExamScreen(
+                        selfExamPayload = activeSelfExamPayload,
+                        teacherSession = if (activeSelfExamPayload == null) activeTeacherSession else null,
+                        onCheckpointRefresh = { id -> mongoBackendRepository.refreshSelfExamCheckpoint(id) },
+                        onCheckpointReload = { id -> mongoBackendRepository.reloadSelfExamCheckpoint(id) },
+                        onCheckpointSave = { payload, snapshot -> mongoBackendRepository.saveSelfExamCheckpoint(payload, snapshot) },
                         studentId = studentId,
                         exam = activeExam ?: fallbackExam(studentId),
                         warningCount = warningCount,
                         authoritativeSuspicionScore = authoritativeSuspicionScore,
                         onFaceWarningsChanged = { count ->
+                            if (activeSelfExamPayload == null && renderedAttempt != activeScoreAttempt) return@ExamScreen
                             val previousFaceWarnings = finalFaceWarnings
                             val previousScore = SuspicionScoreCalculator.calculateScore(
                                 appSwitchWarnings = warningCount,
@@ -883,10 +1027,11 @@ class MainActivity : FragmentActivity() {
                         },
                         onCameraPreviewChanged = { snapshot ->
                             if (activeSelfExamPayload == null) {
-                                sendPreviewSnapshot(snapshot)
+                                sendPreviewSnapshot(snapshot, renderedAttempt)
                             }
                         },
                         onPhoneDetected = { labels ->
+                            if (activeSelfExamPayload == null && renderedAttempt != activeScoreAttempt) return@ExamScreen
                             val previousScore = SuspicionScoreCalculator.calculateScore(
                                 appSwitchWarnings = warningCount,
                                 faceMissingWarnings = finalFaceWarnings,
@@ -907,6 +1052,7 @@ class MainActivity : FragmentActivity() {
                             }
                         },
                         onAudioWarning = {
+                            if (activeSelfExamPayload == null && renderedAttempt != activeScoreAttempt) return@ExamScreen
                             val previousScore = SuspicionScoreCalculator.calculateScore(
                                 appSwitchWarnings = warningCount,
                                 faceMissingWarnings = finalFaceWarnings,
@@ -931,20 +1077,27 @@ class MainActivity : FragmentActivity() {
                             finalAnswers = answers
                             val selfPayload = activeSelfExamPayload
                             if (selfPayload != null) {
+                                val useBulk = BuildConfig.SELF_EXAM_BULK_V1 && selfPayload.session.bulkSubmissionVersion == 1
                                 runCatching {
-                                        persistSelfExamAnswers(
-                                            payload = selfPayload,
-                                            answers = answers,
-                                            repository = mongoBackendRepository
-                                        )
+                                    if (useBulk) {
+                                        mongoBackendRepository.submitBulkSelfExam(selfPayload, answers)
+                                    } else {
+                                        persistSelfExamAnswers(selfPayload, answers, mongoBackendRepository)
                                         mongoBackendRepository.submitSelfExam(selfPayload.session.id)
-                                    }.onSuccess { result ->
-                                        selfExamResult = result
-                                        authMessage = null
-                                    }.onFailure { error ->
-                                        isExamFinishing = false
-                                        authMessage = error.message ?: "Could not submit self exam."
-                                    }.isSuccess
+                                    }
+                                }.onSuccess { result ->
+                                    selfExamResult = result
+                                    authMessage = null
+                                    val totalWarn = warningCount + finalFaceWarnings + audioWarnings + phoneWarnings
+                                    val selfSub = convertSelfExamResultToSubmission(result, totalWarn)
+                                    persistSelfExamResultHistory(examStorage, selfSub)
+                                    submissions = examStorage.getSubmissions()
+                                    if (useBulk) mongoBackendRepository.acknowledgeBulkSelfExamResult(result.session.id)
+                                }.onFailure { error ->
+                                    isExamFinishing = false
+                                    authMessage = if (error is com.jubayer.cheatlock.data.BulkSelfExamRequestException) localizedContext.getString(error.messageResource) else error.message ?: "Could not submit self exam."
+                                    if (useBulk) throw error
+                                }.isSuccess
                             } else {
                                 val resolvedExamId = activeExam?.id
                                 val resolvedStudentId = studentId.ifBlank {
@@ -958,7 +1111,7 @@ class MainActivity : FragmentActivity() {
                                     faceMissingWarnings = finalFaceWarnings,
                                     audioWarnings = audioWarnings,
                                     phoneWarnings = phoneWarnings
-                                )
+                                ).copy(attemptStartedAt = activeScoreAttempt?.startedAt)
                                 val localSessionStatus = if (reason == ExamFinishReason.LOCKED) {
                                     ExamSessionStatus.LOCKED
                                 } else {
@@ -978,10 +1131,9 @@ class MainActivity : FragmentActivity() {
                                             mongoBackendRepository.lockSession(
                                                 reason = "Too many warning activities were detected.",
                                                 examId = examId,
-                                                suspicionScore = finalSuspicionScore
+                                                suspicionScore = finalSuspicionScore,
+                                                attemptStartedAt = activeScoreAttempt?.startedAt
                                             )
-                                        } else {
-                                            mongoBackendRepository.submitSession(examId)
                                         }
                                         examStorage.saveSubmission(submission)
                                         examStorage.saveSession(
@@ -1013,7 +1165,7 @@ class MainActivity : FragmentActivity() {
                                 selfExamStorage.clearActiveSessionId()
                                 studentSubScreen = AppRootScreen.SelfExamResult
                             } else {
-                                examStorage.clearExam()
+                                examStorage.clearExam(ExamAttemptKey.from(studentId, activeExam?.id, activeTeacherSession?.startedAt))
                                 isLoggedIn = false
                                 isExamSubmitted = true
                             }
@@ -1024,6 +1176,7 @@ class MainActivity : FragmentActivity() {
                         AppRootScreen.SelfExamSetup -> {
                     isExamRunning = false
                     SelfExamSetupScreen(
+                        onRecoverPendingSubmission = { mongoBackendRepository.recoverPendingSelfExamSubmission() },
                         persistedSessionId = selfExamStorage.getActiveSessionId(),
                         onLoadClasses = { mongoBackendRepository.getSelfExamClasses() },
                         onLoadSubjects = { classId -> mongoBackendRepository.getSelfExamSubjects(classId) },
@@ -1065,9 +1218,19 @@ class MainActivity : FragmentActivity() {
                             selfExamResult = result
                             activeSelfExamPayload = null
                             selfExamStorage.clearActiveSessionId()
+                            val selfSub = convertSelfExamResultToSubmission(result, 0)
+                            persistSelfExamResultHistory(examStorage, selfSub)
+                            submissions = examStorage.getSubmissions()
                             studentSubScreen = AppRootScreen.SelfExamResult
+                            scope.launch { runCatching { mongoBackendRepository.acknowledgeBulkSelfExamResult(result.session.id) } }
                         },
-                        onSubmitExpired = { sessionId -> mongoBackendRepository.submitSelfExam(sessionId) },
+                        onSubmitExpired = { sessionId ->
+                            val result = mongoBackendRepository.submitSelfExam(sessionId)
+                            val selfSub = convertSelfExamResultToSubmission(result, 0)
+                            persistSelfExamResultHistory(examStorage, selfSub)
+                            submissions = examStorage.getSubmissions()
+                            result
+                        },
                         onBack = {
                             studentSubScreen = null
                             authMessage = null
@@ -1118,6 +1281,20 @@ class MainActivity : FragmentActivity() {
                                 mongoBackendRepository.joinClass(inviteCode)
                             },
                             onStartExam = { exam ->
+                                authMessage = null
+                                // Reject incompatible transport data before any session/admission request.
+                                teacherExamStartupIssue(exam)?.let { issue ->
+                                    val message = when (issue.problem) {
+                                        TeacherExamStartupProblem.QUESTIONS_UNAVAILABLE -> getString(R.string.teacher_exam_questions_unavailable)
+                                        TeacherExamStartupProblem.UNSUPPORTED_QUESTION -> getString(R.string.teacher_exam_question_unsupported, issue.questionNumber)
+                                        TeacherExamStartupProblem.INCOMPLETE_QUESTION -> getString(R.string.teacher_exam_question_incomplete, issue.questionNumber)
+                                    }
+                                    throw IllegalStateException(message)
+                                }
+                                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ||
+                                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                    throw IllegalStateException(getString(R.string.monitoring_permissions_required))
+                                }
                                 val account = studentAccount ?: throw Exception("Please log in again.")
                                 val examId = exam.id?.trim().orEmpty()
                                 if (examId.isBlank()) {
@@ -1170,20 +1347,30 @@ class MainActivity : FragmentActivity() {
                                                 mongoBackendRepository.startSession(examId)
                                             }.getOrElse { error ->
                                                 Log.e("MainActivity", "Failed to start session", error)
-                                                // If session fails, it might be due to an existing one. We allow the student to join.
-                                                runCatching { mongoBackendRepository.getMySession(examId) }.getOrNull()
-                                                    ?: throw Exception("Exam Startup Error: ${error.message ?: "Server unreachable"}")
+                                                throw Exception("Exam Startup Error: ${error.message ?: "Server unreachable"}")
                                             }
                                             
+                                            if (startedSession.startedAt == null || startedSession.startedAt <= 0 ||
+                                                startedSession.status != ExamSessionStatus.IN_PROGRESS ||
+                                                startedSession.studentId != account.identifier || startedSession.examId != examId) {
+                                                throw IllegalStateException("The exam session could not be verified. Reload the exam and retry.")
+                                            }
+                                            activeTeacherSession = startedSession
                                             examStorage.saveSession(startedSession)
                                             authoritativeSuspicionScore = startedSession.suspicionScore
                                             activeScoreAttempt = ScoreAttempt(examId, startedSession.startedAt)
+                                            val screenAttempt = activeScoreAttempt
+                                            screenSnapshotSender = { snapshot, capturedAt ->
+                                                sendPreviewSnapshot(snapshot, screenAttempt, MonitoringSnapshotSource.SCREEN, capturedAt)
+                                            }
                                             
                                             runCatching {
                                                 mongoBackendRepository.sendProctoringEvent(
                                                     ProctoringEventRequest(
                                                         eventName = "student_joined_exam",
-                                                        examId = examId
+                                                        examId = examId,
+                                                        eventId = "join-${UUID.randomUUID()}",
+                                                        attemptStartedAt = startedSession.startedAt
                                                     )
                                                 )
                                             }
@@ -1238,7 +1425,9 @@ class MainActivity : FragmentActivity() {
                                 showHomeScreen = true
                             },
                             onUpdateProfile = { newName, newId ->
-                                studentAccount = studentAccount?.copy(name = newName, identifier = newId)
+                                val updatedAccount = mongoBackendRepository.updateProfile(newName, newId)
+                                studentAccount = updatedAccount
+                                studentId = updatedAccount.identifier
                             },
                             onDeleteAccount = { password ->
                                 mongoBackendRepository.deleteAccount(password)
@@ -1282,8 +1471,19 @@ class MainActivity : FragmentActivity() {
                                     "Public account deletion URL has not been configured."
                                 )
                             },
+                            appLanguage = appLanguage,
+                            onLanguageChange = { language ->
+                                AppUiPreferences.setLanguage(this@MainActivity, language)
+                                appLanguage = language
+                            },
+                            appThemeMode = appThemeMode,
+                            onThemeModeChange = { mode ->
+                                AppUiPreferences.setThemeMode(this@MainActivity, mode)
+                                appThemeMode = mode
+                            },
                             externalMessage = authMessage,
-                            recentNotifications = studentNotifications
+                            recentNotifications = studentNotifications,
+                            submissions = submissions
                         )
                     }
                         }
@@ -1311,6 +1511,7 @@ class MainActivity : FragmentActivity() {
                         onSignupSuccess = { account ->
                             if (account.role == com.jubayer.cheatlock.model.UserRole.STUDENT) {
                                 studentAccount = account
+                                submissions = examStorage.getSubmissions()
                                 authMessage = "Success: Account created. Welcome to Student Command!"
                             } else {
                                 verifyBiometricThenContinue(
@@ -1335,6 +1536,7 @@ class MainActivity : FragmentActivity() {
                         },
                         onStudentLogin = { account ->
                             studentAccount = account
+                            submissions = examStorage.getSubmissions()
                             authMessage = null
                         },
                         onTeacherLogin = { account ->
@@ -1369,7 +1571,17 @@ class MainActivity : FragmentActivity() {
                                 }
                             }
                         },
-                        externalMessage = authMessage
+                        externalMessage = authMessage,
+                        appLanguage = appLanguage,
+                        onLanguageChange = { language ->
+                            AppUiPreferences.setLanguage(this@MainActivity, language)
+                            appLanguage = language
+                        },
+                        appThemeMode = appThemeMode,
+                        onThemeModeChange = { mode ->
+                            AppUiPreferences.setThemeMode(this@MainActivity, mode)
+                            appThemeMode = mode
+                        }
                     )
                         }
                     }
@@ -1377,6 +1589,7 @@ class MainActivity : FragmentActivity() {
             }
         }
     }
+}
 }
 
     override fun onResume() {
@@ -1427,6 +1640,8 @@ class MainActivity : FragmentActivity() {
 
     private fun stopScreenCapture() {
         ScreenCaptureCallbacks.onSnapshot = null
+        ScreenCaptureCallbacks.onReady = null
+        ScreenCaptureCallbacks.onStartFailure = null
         runCatching { ScreenCaptureService.stop(applicationContext) }
     }
 
@@ -1484,6 +1699,49 @@ class MainActivity : FragmentActivity() {
         )
     }
 
+    private fun convertSelfExamResultToSubmission(
+        result: SelfExamResultResponse,
+        warnings: Int = 0
+    ): ExamSubmission {
+        val correctCount = result.result.correctCount
+        val questionCount = result.questions.size
+        val percentage = if (questionCount > 0) correctCount.toDouble() / questionCount * 100.0 else 0.0
+        val difficultyTitle = result.session.difficultyMode.replaceFirstChar {
+            if (it.isLowerCase()) it.titlecase(java.util.Locale.getDefault()) else it.toString()
+        }
+        return ExamSubmission(
+            id = result.session.id,
+            studentId = result.session.studentId,
+            examId = "Self Practice: $difficultyTitle",
+            submittedAt = System.currentTimeMillis(),
+            answers = result.questions.mapIndexed { index, q ->
+                val ans = result.answers.find { it.questionId == q.id }
+                val opt = q.options.find { it.id == ans?.selectedOptionId }
+                val correctOpt = q.options.find { it.isCorrect }
+                val answerText = opt?.text ?: ans?.answerText.orEmpty().ifBlank { "Unanswered" }
+                val isCorrect = ans?.isCorrect ?: (opt?.isCorrect == true)
+                val explanationText = if (q.explanation.isNotBlank()) " | Note: ${q.explanation}" else ""
+                StudentAnswer(
+                    questionIndex = index,
+                    questionText = q.questionText,
+                    answerText = if (isCorrect) "$answerText (Correct ✅)$explanationText" else "$answerText (Incorrect ❌ • Correct: ${correctOpt?.text ?: "N/A"})$explanationText",
+                    selectedOptionId = ans?.selectedOptionId,
+                    isCorrect = isCorrect
+                )
+            },
+            appSwitchWarnings = warnings,
+            faceMissingWarnings = 0,
+            audioWarnings = 0,
+            phoneWarnings = 0,
+            totalWarnings = warnings,
+            riskLevel = if (warnings == 0) "LOW" else "MEDIUM",
+            grade = percentage,
+            feedback = "Self-Practice: $correctCount/$questionCount Correct",
+            correctAnswerCount = correctCount,
+            totalQuestionCount = questionCount
+        )
+    }
+
     private fun SelfExamPayloadResponse.toSecureExam(): Exam {
         return Exam(
             id = "self:${session.id}",
@@ -1498,11 +1756,16 @@ class MainActivity : FragmentActivity() {
                     type = if (question.questionType.equals("mcq", ignoreCase = true)) QuestionType.MCQ else QuestionType.CQ,
                     text = question.questionText,
                     options = question.options.map { it.text },
+                    optionIds = question.options.map { it.id },
                     correctAnswer = ""
                 )
             },
             assignedStudents = listOf(session.studentId)
         )
+    }
+
+    private fun persistSelfExamResultHistory(storage: ExamStorage, submission: ExamSubmission) {
+        if (storage.getSubmissions().none { it.id == submission.id }) storage.saveSubmission(submission)
     }
 
     private suspend fun persistSelfExamAnswers(
@@ -1512,7 +1775,7 @@ class MainActivity : FragmentActivity() {
     ) {
         answers.forEach { answer ->
             val question = payload.questions.getOrNull(answer.questionIndex) ?: return@forEach
-            val selectedOptionId = question.options
+            val selectedOptionId = answer.selectedOptionId ?: question.options
                 .firstOrNull { it.text == answer.answerText }
                 ?.id
             repository.saveSelfExamAnswer(

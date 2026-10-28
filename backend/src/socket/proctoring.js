@@ -1,10 +1,14 @@
 import { Exam } from "../models/Exam.js";
+import { createHash, randomUUID } from "node:crypto";
+import { findAdmittedStudentExam, assertStudentAdmission } from "../services/examAdmission.js";
+import { getEffectiveExamStatus } from "../routes/exams.js";
+import { snapshotSource, parseSnapshot, snapshotObjectKey, serializeStudentSnapshots } from "../services/monitoringMedia.js";
 import { ExamSession } from "../models/ExamSession.js";
 import { ProctoringEvent } from "../models/ProctoringEvent.js";
 import { User } from "../models/User.js";
 import { verifyToken } from "../middleware/auth.js";
-import { consumeSocketAuthRateLimit } from "../middleware/rateLimiter.js";
-import { uploadFrame, getSignedFrameUrl, isS3Configured } from "../services/s3.js";
+import { consumeSocketAuthRateLimit, consumeStudentMonitoringRateLimit } from "../middleware/rateLimiter.js";
+import { uploadFrame, isS3Configured } from "../services/s3.js";
 import { logger } from "../services/logger.js";
 import {
   normalizeEvidencePriority,
@@ -138,11 +142,13 @@ export function configureProctoringSocket(io) {
   });
 
   io.on("connection", (socket) => {
-    socket.on("join_exam_room", async ({ examId }, acknowledge) => {
+    socket.data.studentId = socket.user?.role === "STUDENT" ? socket.user.identifier : null;
+    socket.on("join_exam_room", async (payload, acknowledge) => {
       try {
+        const examId = payload?.examId;
         const exam = await assertTeacherCanAccessExam(socket.user, examId);
         const room = roomName(exam._id.toString());
-        socket.join(room);
+        await socket.join(room);
         acknowledge?.({ ok: true, room });
         socket.emit("live_student_list", await buildLiveStudentList(exam));
       } catch (error) {
@@ -152,8 +158,8 @@ export function configureProctoringSocket(io) {
     
     socket.on("teacher_command", async (payload, acknowledge) => {
       try {
-        await emitTeacherCommand(io, socket.user, payload);
-        acknowledge?.({ ok: true });
+        const command = await emitTeacherCommand(io, socket.user, payload);
+        acknowledge?.({ ok: true, ...command });
       } catch (error) {
         acknowledge?.({ ok: false, message: error.message });
       }
@@ -162,6 +168,8 @@ export function configureProctoringSocket(io) {
     for (const eventName of STUDENT_EVENTS) {
       socket.on(eventName, async (payload, acknowledge) => {
         try {
+          const limit = await consumeStudentMonitoringRateLimit(socket.user);
+          if (!limit.allowed) throw Object.assign(new Error("Monitoring rate limited."), { status: 429, code: "RATE_LIMITED" });
           if (eventName === "camera_preview_updated") {
             logger.debug("Student proctoring event received.", {
               eventName,
@@ -171,11 +179,14 @@ export function configureProctoringSocket(io) {
             });
           }
           const result = await handleStudentProctoringEvent(io, socket.user, eventName, payload);
-          const examRoom = roomName(result.exam._id.toString());
-          socket.join(examRoom);
-          socket.data.studentExamRooms = [
-            ...new Set([...(socket.data.studentExamRooms || []), examRoom]),
-          ];
+          const examId = result.exam._id.toString();
+          const attemptStartedAt = result.student.attemptStartedAt;
+          const studentRoom = studentAttemptRoom(examId, socket.user.identifier, attemptStartedAt);
+          for (const binding of socket.data.studentExamBindings || []) {
+            if (binding.room !== studentRoom) await socket.leave(binding.room);
+          }
+          await socket.join(studentRoom);
+          socket.data.studentExamBindings = [{ room: studentRoom, examId, attemptStartedAt }];
           if (eventName === "camera_preview_updated") {
             logger.debug("Student proctoring event handled.", {
               eventName,
@@ -192,24 +203,23 @@ export function configureProctoringSocket(io) {
     socket.on("disconnect", async () => {
       if (socket.user?.role !== "STUDENT") return;
 
-      for (const room of socket.data.studentExamRooms || []) {
+      for (const { room, examId, attemptStartedAt } of socket.data.studentExamBindings || []) {
         try {
           const remainingSockets = await io.in(room).fetchSockets();
           const studentStillConnected = remainingSockets.some(
-            (candidate) => candidate.user?.identifier === socket.user.identifier
+            (candidate) => candidate.data?.studentId === socket.user.identifier
           );
           if (studentStillConnected) continue;
 
-          const examId = room.replace(/^exam:/, "");
           const [exam, session] = await Promise.all([
             Exam.findById(examId),
-            ExamSession.findOne({ examId, studentId: socket.user.identifier }),
+            ExamSession.findOneAndUpdate(
+              { examId, studentId: socket.user.identifier, startedAt: attemptStartedAt, status: "IN_PROGRESS", onlineStatus: "ONLINE" },
+              { $set: { onlineStatus: "OFFLINE", lastSeenAt: Date.now() } },
+              { new: true }
+            ),
           ]);
-          if (!exam || !session || session.onlineStatus === "OFFLINE") continue;
-
-          session.onlineStatus = "OFFLINE";
-          session.lastSeenAt = Date.now();
-          await session.save();
+          if (!exam || !session) continue;
           await broadcastSessionState(io, "student_left_exam", exam, session);
         } catch (error) {
           logger.warn("Failed to reconcile disconnected student presence.", {
@@ -224,13 +234,27 @@ export function configureProctoringSocket(io) {
 export async function emitTeacherCommand(io, user, payload = {}) {
   const sanitized = validateTeacherCommandPayload(payload);
   const exam = await assertTeacherCanAccessExam(user, sanitized.examId);
-  const room = roomName(exam._id.toString());
-  io.to(room).emit("teacher_command", {
+  assertExamAcceptsProctoring(exam);
+  if (!exam.assignedStudents?.includes(sanitized.studentId)) {
+    throw new Error("Target student is not assigned to this exam.");
+  }
+  const session = await ExamSession.findOne({ examId: exam._id, studentId: sanitized.studentId }).lean();
+  assertSessionAcceptsProctoring("teacher_command", session);
+  assertAttemptMatches("teacher_command", payload, session);
+  const issuedAt = Date.now();
+  const command = {
+    commandId: randomUUID(),
     studentId: sanitized.studentId,
     examId: exam._id.toString(),
+    attemptStartedAt: session.startedAt,
+    issuedAt,
+    expiresAt: issuedAt + 30_000,
     command: sanitized.command,
     message: sanitized.message,
-  });
+    status: "DISPATCHED_UNCONFIRMED",
+  };
+  io.to(studentAttemptRoom(command.examId, command.studentId, command.attemptStartedAt)).emit("teacher_command", command);
+  return command;
 }
 
 export async function handleStudentProctoringEvent(io, user, eventName, payload = {}) {
@@ -246,20 +270,29 @@ export async function handleStudentProctoringEvent(io, user, eventName, payload 
   }
   validateStudentEventPayload(eventName, payload);
 
-  const exam = await assertStudentCanSendEvent(user, examId, studentId);
+  const exam = await findAdmittedStudentExam(user, examId);
+  assertStudentAdmission(user, exam, studentId);
   const now = Date.now();
   const existingSession = await ExamSession.findOne({ examId: exam._id, studentId }).lean();
   assertExamAcceptsProctoring(exam);
   assertSessionAcceptsProctoring(eventName, existingSession);
   assertAttemptMatches(eventName, payload, existingSession);
+  if (payload.capturedAt != null && (!Number.isFinite(Date.parse(payload.capturedAt)) || Date.parse(payload.capturedAt) < existingSession.startedAt)) {
+    throw Object.assign(new Error("Snapshot capture time precedes this attempt."), { status: 409, code: "STALE_EXAM_ATTEMPT" });
+  }
 
-  const shouldLogEvent =
-    eventName !== "camera_preview_updated" ||
-    !existingSession?.lastPreviewEventLoggedAt ||
-    now - existingSession.lastPreviewEventLoggedAt >= PREVIEW_TIMELINE_INTERVAL_MS;
+  const source = snapshotSource(eventName);
+  const shouldLogEvent = eventName !== "student_heartbeat" && (!source || !await ProctoringEvent.exists({
+    examId: exam._id, studentId, eventType: eventName,
+    sessionId: String(existingSession._id),
+    serverReceivedAt: { $gte: new Date(Math.max(existingSession.startedAt, now - PREVIEW_TIMELINE_INTERVAL_MS)) },
+  }));
   const patch = buildEventPatch(eventName, payload);
   const scoreDelta = resolveEventScoreDelta(eventName, payload);
   const eventId = String(payload.eventId || payload.mutationId || payload.idempotencyKey || "").trim();
+  const persistedMutation = scoreDelta > 0 && eventId && await ProctoringEvent.exists({
+    examId: exam._id, studentId, idempotencyKey: monitoringEventKey(existingSession, eventName, payload),
+  });
   if (eventName === "suspicion_score_updated" || scoreDelta > 0) {
     traceScore("[SCORE UPDATE RECEIVED]", {
       eventId,
@@ -276,36 +309,23 @@ export async function handleStudentProctoringEvent(io, user, eventName, payload 
     patch.lastPreviewEventLoggedAt = now;
   }
 
-  // Upload snapshots to S3 bucket to avoid MongoDB bloat and oversized replay responses.
-  if (isS3Configured() && eventName === "camera_preview_updated" && payload.previewBase64 && payload.previewBase64.length > 100) {
-    const key = `exams/${exam._id}/students/${studentId}/camera_live.jpg`;
-    try {
-      const s3Key = await uploadFrame(key, payload.previewBase64, "image/jpeg");
-      patch.previewBase64 = s3Key;
-    } catch (err) {
-      logger.error("S3 live camera frame upload failed.", { errorName: err.name || "UploadError" });
-    }
-  }
-  if (isS3Configured() && eventName === "screen_telemetry_uploaded" && payload.base64 && payload.base64.length > 100) {
-    const key = `exams/${exam._id}/students/${studentId}/screen_live.jpg`;
-    try {
-      const s3Key = await uploadFrame(key, payload.base64, "image/jpeg");
-      patch.screenBase64 = s3Key;
-    } catch (err) {
-      logger.error("S3 screen frame upload failed.", { errorName: err.name || "UploadError" });
-    }
-  }
+  // Live snapshots remain bounded inline session state. Only independently sampled
+  // evidence is uploaded below, using immutable content-addressed object keys.
 
   const session = await incrementStudentScore({
     exam,
     studentId,
-    amount: scoreDelta,
-    mutationId: eventId,
+    amount: persistedMutation ? 0 : scoreDelta,
+    mutationId: eventId ? `${existingSession.startedAt}:${eventId}` : "",
     authoritativeScore: payload.totalSuspicionScore ?? payload.suspicionScore,
     patch,
     studentName: await findStudentName(studentId),
     now,
+    attemptSession: existingSession,
   });
+  if (!session) {
+    throw Object.assign(new Error("This monitoring event belongs to a stale exam attempt."), { status: 409, code: "STALE_EXAM_ATTEMPT" });
+  }
   payload.totalSuspicionScore = session.suspicionScore || 0;
   if (eventName === "suspicion_score_updated" || scoreDelta > 0) {
     traceScore("[SCORE UPDATE COMMITTED]", {
@@ -342,13 +362,10 @@ function resolveEventScoreDelta(eventName, payload) {
 }
 
 export function assertAttemptMatches(eventName, payload, session) {
-  if (!['suspicion_score_updated', 'ai_alert_created'].includes(eventName)) return;
-  if (payload.attemptStartedAt == null) return;
-
   const expected = Number(payload.attemptStartedAt);
   const actual = Number(session?.startedAt);
-  if (!Number.isFinite(expected) || !Number.isFinite(actual) || expected !== actual) {
-    const error = new Error('This score event belongs to a stale exam attempt.');
+  if (!Number.isSafeInteger(expected) || expected <= 0 || !Number.isSafeInteger(actual) || expected !== actual) {
+    const error = new Error('This event belongs to a stale or unbound exam attempt.');
     error.status = 409;
     error.code = 'STALE_EXAM_ATTEMPT';
     throw error;
@@ -392,7 +409,6 @@ function buildEventPatch(eventName, payload) {
       status: "IN_PROGRESS",
       onlineStatus: "ONLINE",
       latestAlert: "Student joined exam",
-      startedAt: Date.now(),
     };
   }
 
@@ -415,7 +431,7 @@ function buildEventPatch(eventName, payload) {
     return {
       status: "IN_PROGRESS",
       onlineStatus: "ONLINE",
-      latestAlert: String(payload.latestAlert || "Student heartbeat"),
+      // Presence updates must not erase the last security alert.
     };
   }
 
@@ -457,19 +473,20 @@ export async function incrementStudentScore({
   patch = {},
   studentName,
   now = Date.now(),
+  attemptSession,
 }) {
   const scoreDelta = clampScoreDelta(amount);
   const normalizedMutationId = String(mutationId || "").trim();
   const fallbackScore = authoritativeScore == null ? null : clampScore(authoritativeScore);
   const nowDate = new Date(now);
   const baseSet = {
-    ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
+    ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined).map(([key, value]) => [key, { $literal: value }])),
     examId: exam._id,
-    studentId,
+    studentId: { $literal: studentId },
     lastSeenAt: now,
     updatedAt: nowDate,
     createdAt: { $ifNull: ["$createdAt", nowDate] },
-    studentName: { $ifNull: ["$studentName", studentName || studentId] },
+    studentName: { $ifNull: ["$studentName", { $literal: studentName || studentId }] },
   };
   delete baseSet.suspicionScore;
 
@@ -499,7 +516,7 @@ export async function incrementStudentScore({
     : appliedMutations;
 
   return ExamSession.findOneAndUpdate(
-    { examId: exam._id, studentId },
+    { examId: exam._id, studentId, ...(attemptSession ? { _id: attemptSession._id, startedAt: attemptSession.startedAt, status: "IN_PROGRESS" } : {}) },
     [
       {
         $set: {
@@ -509,7 +526,7 @@ export async function incrementStudentScore({
         },
       },
     ],
-    { new: true, upsert: true }
+    { new: true, upsert: !attemptSession }
   ).lean();
 }
 
@@ -524,17 +541,8 @@ export async function buildLiveProctoringPayload(exam) {
 }
 
 export async function broadcastSessionState(io, eventName, exam, session, scoreContext = {}) {
-  const student = serializeLiveStudent(session, scoreContext);
+  const student = await serializeStudentSnapshots(serializeLiveStudent(session, scoreContext));
   
-  // Sign S3 keys to temporary URLs if needed before broadcasting to the proctor console
-  if (student.previewBase64 && !student.previewBase64.startsWith("data:") && !student.previewBase64.startsWith("http")) {
-    try {
-      student.previewUrl = await getSignedFrameUrl(student.previewBase64);
-    } catch (err) {
-      logger.error("Failed to sign frame URL for broadcast.", { errorName: err.name || "SigningError" });
-    }
-  }
-
   const room = roomName(exam._id.toString());
 
   logger.debug("Broadcasting proctoring event.", { eventName, examId: exam._id.toString() });
@@ -551,11 +559,14 @@ export async function broadcastSessionState(io, eventName, exam, session, scoreC
       timestamp: new Date().toISOString(),
     });
   }
-  if (eventName !== "camera_preview_updated") {
-    io?.to(room).emit("live_student_list", await buildLiveStudentList(exam));
-  }
+  // The initial join is a full roster; ordinary events carry just one student.
 
   return student;
+}
+
+export function monitoringEventKey(session, eventName, payload, fallback = "") {
+  const rawKey = String(payload.idempotencyKey || payload.mutationId || payload.eventId || payload.evidenceId || fallback);
+  return createHash("sha256").update(JSON.stringify([String(session._id), session.startedAt, eventName, rawKey])).digest("hex");
 }
 
 async function logProctoringEvent(exam, session, eventName, payload) {
@@ -563,7 +574,12 @@ async function logProctoringEvent(exam, session, eventName, payload) {
   const suspicionScore = clampScore(payload.totalSuspicionScore ?? payload.suspicionScore ?? session.suspicionScore ?? 0);
   const scoreDelta = clampScoreDelta(payload.scoreDelta ?? 0);
   const evidenceId = sanitizeToken(payload.evidenceId) || evidenceIdFor(exam._id, session.studentId, eventName, payload);
-  const idempotencyKey = sanitizeToken(payload.idempotencyKey) || sanitizeToken(payload.mutationId) || evidenceId;
+  const idempotencyKey = monitoringEventKey(session, eventName, payload, evidenceId);
+  const existingEvent = await ProctoringEvent.findOne({ examId: exam._id, studentId: session.studentId, idempotencyKey }).lean();
+  if (existingEvent) {
+    await runEvidencePromotionSideEffects({ exam, session, eventName, payload, stored: existingEvent, serverReceivedAt });
+    return;
+  }
   const priority = eventName === "ai_alert_created"
     ? normalizeEvidencePriority(payload.priority || "suspicious")
     : normalizeEvidencePriority(payload.priority || (payload.suspicious ? "suspicious" : "routine"));
@@ -577,10 +593,13 @@ async function logProctoringEvent(exam, session, eventName, payload) {
     : String(payload.previewBase64 || session.previewBase64 || "");
 
   let previewFieldVal = "";
-  if (isS3Configured() && dbBase64 && dbBase64.length > 100) {
-    const key = `exams/${exam._id}/students/${session.studentId}/${eventName}_${Date.now()}.jpg`;
+  let uploadedSnapshotKey = "";
+  if (isS3Configured() && dbBase64.startsWith("data:image/")) {
+    const source = snapshotSource(eventName) || "camera";
+    const key = snapshotObjectKey({ examId: exam._id, studentId: session.studentId, attemptStartedAt: session.startedAt, source, dataUrl: dbBase64, evidenceId: idempotencyKey });
     try {
-      previewFieldVal = await uploadFrame(key, dbBase64, "image/jpeg");
+      previewFieldVal = await uploadFrame(key, dbBase64, parseSnapshot(dbBase64).contentType);
+      uploadedSnapshotKey = previewFieldVal;
     } catch (err) {
       logger.error("S3 telemetry event upload failed.", { errorName: err.name || "UploadError" });
       previewFieldVal = dbBase64;
@@ -612,7 +631,7 @@ async function logProctoringEvent(exam, session, eventName, payload) {
     scoreDelta,
     totalSuspicionScore: suspicionScore,
     occurredAt: payload.occurredAt ? new Date(payload.occurredAt) : new Date(),
-    evidenceReference: String(payload.evidenceReference || ""),
+    evidenceReference: uploadedSnapshotKey,
     alertMessage,
     severity: severityFor(eventName, suspicionScore),
     confidence: normalizeConfidence(payload.confidence),
@@ -620,7 +639,7 @@ async function logProctoringEvent(exam, session, eventName, payload) {
     endedAt: payload.endedAt ? new Date(payload.endedAt) : null,
     captureTiming: normalizeCaptureTiming(payload, session),
     metadata: sanitizeMetadata(payload.metadata),
-    previewUrl: String(payload.previewUrl || session.previewUrl || ""),
+    previewUrl: "",
     previewBase64: previewFieldVal,
   };
 
@@ -698,7 +717,7 @@ async function fetchLiveStudents(exam) {
     .sort({ onlineStatus: -1, suspicionScore: -1, updatedAt: -1 })
     .lean();
 
-  return sessions.map(serializeLiveStudent);
+  return Promise.all(sessions.map((session) => serializeStudentSnapshots(serializeLiveStudent(session))));
 }
 
 function serializeLiveStudent(session, scoreContext = {}) {
@@ -711,6 +730,7 @@ function serializeLiveStudent(session, scoreContext = {}) {
   });
   return {
     sessionId: String(session._id || ""),
+    attemptStartedAt: session.startedAt || null,
     studentId: session.studentId,
     studentName: session.studentName || session.studentId,
     rollId: session.studentId,
@@ -730,7 +750,7 @@ function serializeLiveStudent(session, scoreContext = {}) {
   };
 }
 
-async function assertTeacherCanAccessExam(user, examId) {
+export async function assertTeacherCanAccessExam(user, examId) {
   if (!user || !TEACHER_COMMAND_ROLES.includes(user.role)) {
     throw new Error("Only authorized staff can access proctoring rooms.");
   }
@@ -778,37 +798,18 @@ function validateTeacherCommandPayload(payload) {
   };
 }
 
-async function assertStudentCanSendEvent(user, examId, studentId) {
-  if (user.role !== "STUDENT") {
-    throw new Error("Only students can send proctoring events.");
-  }
-
-  if (user.identifier !== studentId) {
-    throw new Error("Student token does not match event studentId.");
-  }
-
-  const exam = await Exam.findOne({
-    _id: examId,
-    assignedStudents: { $in: studentIdVariants(studentId) },
-  });
-
-  if (!exam) {
-    throw new Error("Student is not assigned to this exam.");
-  }
-
-  return exam;
-}
-
 function assertExamAcceptsProctoring(exam) {
-  if (exam.status !== "LIVE") {
-    throw new Error("Exam is not accepting proctoring events.");
+  if (getEffectiveExamStatus(exam) !== "LIVE") {
+    throw Object.assign(new Error("Exam is not accepting proctoring events."), { status: 410, code: "EXAM_NOT_LIVE" });
   }
 }
 
 function assertSessionAcceptsProctoring(eventName, session) {
-  if (eventName === "student_joined_exam") return;
   if (!session || session.status !== "IN_PROGRESS") {
-    throw new Error("Session is not accepting proctoring events.");
+    const code = session?.status === "LOCKED" ? "SESSION_LOCKED"
+      : session?.status === "RESET_BY_TEACHER" ? "SESSION_RESET"
+      : session?.status === "SUBMITTED" ? "SESSION_FINALIZED" : "SESSION_NOT_ACTIVE";
+    throw Object.assign(new Error("Session is not accepting proctoring events."), { status: 409, code });
   }
 }
 
@@ -817,14 +818,12 @@ async function findStudentName(studentId) {
   return student?.name || studentId;
 }
 
-function studentIdVariants(studentId) {
-  const normalized = String(studentId || "").trim().toLowerCase();
-  const compact = normalized.replace(/[^a-z0-9]/g, "");
-  return [...new Set([normalized, compact].filter(Boolean))];
+function roomName(examId) {
+  return `exam:staff:${examId}`;
 }
 
-function roomName(examId) {
-  return `exam:${examId}`;
+export function studentAttemptRoom(examId, studentId, attemptStartedAt) {
+  return `attempt:${createHash("sha256").update(JSON.stringify([String(examId), studentId, attemptStartedAt])).digest("hex")}`;
 }
 
 function clampScore(score) {
@@ -936,7 +935,7 @@ function safePayloadSize(payload) {
 }
 
 export function validateStudentEventPayload(eventName, payload) {
-  if (clampScoreDelta(payload.scoreDelta) > 0) {
+  if (clampScoreDelta(resolveEventScoreDelta(eventName, payload)) > 0) {
     const mutationId = String(payload.mutationId || payload.eventId || payload.idempotencyKey || "").trim();
     if (!mutationId) {
       const error = new Error("A stable mutation identifier is required for score updates.");
@@ -946,6 +945,10 @@ export function validateStudentEventPayload(eventName, payload) {
     }
   }
   const mediaValue = eventName === "screen_telemetry_uploaded" ? payload.base64 : payload.previewBase64;
+  const source = snapshotSource(eventName);
+  if (payload.captureSource && payload.captureSource !== source) throw Object.assign(new Error("Snapshot source does not match event."), { status: 400 });
+  if (source && !mediaValue) throw Object.assign(new Error("Snapshot payload is required."), { status: 400 });
+  if (source === "camera" && payload.base64 || source === "screen" && payload.previewBase64) throw Object.assign(new Error("Conflicting snapshot sources."), { status: 400 });
   if (mediaValue == null || mediaValue === "") return;
   const media = String(mediaValue);
   if (!media.startsWith("data:image/jpeg;base64,") && !media.startsWith("data:image/webp;base64,")) {
@@ -954,6 +957,7 @@ export function validateStudentEventPayload(eventName, payload) {
   if (Buffer.byteLength(media) > MAX_MEDIA_DATA_URL_BYTES) {
     throw new Error("Evidence payload is too large.");
   }
+  parseSnapshot(media);
 }
 
 function normalizeDateString(value) {

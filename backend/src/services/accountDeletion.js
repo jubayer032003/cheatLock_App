@@ -8,6 +8,7 @@ import { Submission } from "../models/Submission.js";
 import { TeacherClass } from "../models/TeacherClass.js";
 import { TeacherCommunity } from "../models/TeacherCommunity.js";
 import { User } from "../models/User.js";
+import { RememberedSession } from "../models/RememberedSession.js";
 import { deleteFrameKeys } from "./s3.js";
 
 export async function deleteStudentAccount(user) {
@@ -28,6 +29,7 @@ export async function deleteStudentAccount(user) {
   try {
     await session.withTransaction(async () => {
       await Promise.all([
+        RememberedSession.deleteMany({ userId: user._id }).session(session),
         ProctoringEvent.deleteMany({ studentId }).session(session),
         ExamSession.deleteMany({ studentId }).session(session),
         Submission.deleteMany({ studentId }).session(session),

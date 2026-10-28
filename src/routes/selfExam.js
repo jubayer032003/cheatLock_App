@@ -1,4 +1,5 @@
 import express from "express";
+import { installBulkSelfExamRoutes } from '../../backend/src/routes/selfExamBulk.js';
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   createSelfExamSession,
@@ -16,6 +17,7 @@ import {
 } from "../../backend/src/services/questionBankService.js";
 
 export const selfExamRouter = express.Router();
+installBulkSelfExamRoutes(selfExamRouter, requireAuth, requireRole);
 
 selfExamRouter.get("/classes", requireAuth, requireRole("STUDENT"), async (_req, res, next) => {
   try {
@@ -43,7 +45,7 @@ selfExamRouter.get("/subjects/:subjectId/chapters", requireAuth, requireRole("ST
 
 selfExamRouter.get("/sessions/active", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    res.json({ session: await getActiveSelfExamSession(req.user.identifier) });
+    res.json({ session: await getActiveSelfExamSession(req.user) });
   } catch (error) {
     next(error);
   }
@@ -51,7 +53,7 @@ selfExamRouter.get("/sessions/active", requireAuth, requireRole("STUDENT"), asyn
 
 selfExamRouter.post("/sessions", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    res.status(201).json({ session: await createSelfExamSession(req.user.identifier, req.body) });
+    res.status(201).json({ session: await createSelfExamSession(req.user, req.body) });
   } catch (error) {
     next(error);
   }
@@ -59,7 +61,7 @@ selfExamRouter.post("/sessions", requireAuth, requireRole("STUDENT"), async (req
 
 selfExamRouter.post("/sessions/:sessionId/start", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    res.json(await startSelfExamSession(req.user.identifier, req.params.sessionId));
+    res.json(await startSelfExamSession(req.user, req.params.sessionId));
   } catch (error) {
     next(error);
   }
@@ -67,7 +69,7 @@ selfExamRouter.post("/sessions/:sessionId/start", requireAuth, requireRole("STUD
 
 selfExamRouter.get("/sessions/:sessionId", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    res.json(await getSelfExamSession(req.user.identifier, req.params.sessionId));
+    res.json(await getSelfExamSession(req.user, req.params.sessionId));
   } catch (error) {
     next(error);
   }
@@ -75,7 +77,7 @@ selfExamRouter.get("/sessions/:sessionId", requireAuth, requireRole("STUDENT"), 
 
 selfExamRouter.post("/sessions/:sessionId/answers", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    res.json({ answer: await saveSelfExamAnswer(req.user.identifier, req.params.sessionId, req.body) });
+    res.json({ answer: await saveSelfExamAnswer(req.user, req.params.sessionId, req.body) });
   } catch (error) {
     next(error);
   }
@@ -83,7 +85,7 @@ selfExamRouter.post("/sessions/:sessionId/answers", requireAuth, requireRole("ST
 
 selfExamRouter.post("/sessions/:sessionId/submit", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    res.json(await submitSelfExam(req.user.identifier, req.params.sessionId));
+    res.json(await submitSelfExam(req.user, req.params.sessionId));
   } catch (error) {
     next(error);
   }
@@ -91,7 +93,7 @@ selfExamRouter.post("/sessions/:sessionId/submit", requireAuth, requireRole("STU
 
 selfExamRouter.get("/sessions/:sessionId/result", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    res.json(await getSelfExamResult(req.user.identifier, req.params.sessionId));
+    res.json(await getSelfExamResult(req.user, req.params.sessionId));
   } catch (error) {
     next(error);
   }

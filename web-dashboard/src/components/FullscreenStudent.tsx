@@ -4,6 +4,8 @@ import { ProgressMeter, cn } from "./ui";
 import type { LiveStudent } from "../types";
 import { useAnimatedNumber } from "../hooks/useAnimatedNumber";
 import { scorePercentage } from "../lib/scoreMetrics";
+import { snapshotFor, sensorStatus } from "../lib/monitoringState";
+import { useMonitoringFreshness } from "../hooks/useMonitoringFreshness";
 
 interface FullscreenStudentProps {
   student: LiveStudent;
@@ -13,9 +15,10 @@ interface FullscreenStudentProps {
 
 export function FullscreenStudent({ student, detailTab, setDetailTab }: FullscreenStudentProps) {
   const percentage = scorePercentage(student);
+  const freshness = useMonitoringFreshness(student);
   const status = statusFromScore(percentage);
-  const cameraSrc = student.previewUrl || student.previewBase64;
-  const screenSrc = student.screenBase64;
+  const cameraSrc = snapshotFor(student, "camera");
+  const screenSrc = snapshotFor(student, "screen");
   const displayScore = useAnimatedNumber(percentage);
 
   return (
@@ -27,14 +30,14 @@ export function FullscreenStudent({ student, detailTab, setDetailTab }: Fullscre
             onClick={() => setDetailTab("camera")}
             className={cn("flex-1 text-center py-1.5 text-xs font-mono rounded", detailTab === "camera" ? "bg-slate-800 text-white font-bold" : "text-slate-400 hover:text-slate-200")}
           >
-            Webcam Stream
+            Camera Snapshot
           </button>
           <button 
             type="button" 
             onClick={() => setDetailTab("screen")}
             className={cn("flex-1 text-center py-1.5 text-xs font-mono rounded", detailTab === "screen" ? "bg-slate-800 text-white font-bold" : "text-slate-400 hover:text-slate-200")}
           >
-            Desktop Capture
+            Screen Snapshot
           </button>
         </div>
 
@@ -61,7 +64,7 @@ export function FullscreenStudent({ student, detailTab, setDetailTab }: Fullscre
           <p className="text-xs text-slate-500 font-mono mt-0.5">{student.rollId || student.studentId}</p>
         </div>
         
-        <StatusBadge status={status} />
+        <StatusBadge status={status} scoreOnly />
         
         <div className="space-y-1">
           <div className="flex justify-between text-xs text-slate-400">
@@ -72,11 +75,12 @@ export function FullscreenStudent({ student, detailTab, setDetailTab }: Fullscre
         </div>
 
         <div className="space-y-2.5 pt-2 border-t border-slate-800 text-xs">
-          <DetailRow label="Live Status" value={student.onlineStatus} />
-          <DetailRow label="Face status" value={student.faceStatus || "Matching"} />
-          <DetailRow label="Audio status" value={student.audioStatus || "Quiet"} />
-          <DetailRow label="Window focus" value={student.focusStatus || "Focused"} />
-          <DetailRow label="Monitor Setup" value={student.multiMonitorStatus || "Normal"} />
+          <DetailRow label="Monitoring status" value={freshness} />
+          <DetailRow label="Face status" value={sensorStatus(student.faceStatus)} />
+          <DetailRow label="Audio status" value={sensorStatus(student.audioStatus)} />
+          <DetailRow label="Window focus" value={sensorStatus(student.focusStatus)} />
+          <DetailRow label="Monitor Setup" value={sensorStatus(student.multiMonitorStatus)} />
+          <DetailRow label="Object detector" value="Unverified" />
           <DetailRow label="Latest alert" value={student.latestAlert || "Active focus monitoring"} />
         </div>
       </div>

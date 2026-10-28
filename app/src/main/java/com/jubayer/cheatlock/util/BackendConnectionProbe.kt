@@ -25,7 +25,7 @@ object BackendConnectionProbe {
     suspend fun ping(url: String): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val base = url.trimEnd('/')
-            val healthOk = client.newCall(
+            client.newCall(
                 Request.Builder()
                     .url("$base/health")
                     .get()
@@ -34,17 +34,6 @@ object BackendConnectionProbe {
                 response.isSuccessful &&
                     response.peekBody(256).string().contains("ok", ignoreCase = true)
             }
-
-            val selfExamRouteMounted = client.newCall(
-                Request.Builder()
-                    .url("$base/self-exam/classes")
-                    .get()
-                    .build()
-            ).execute().use { response ->
-                response.code() in setOf(200, 401, 403)
-            }
-
-            healthOk && selfExamRouteMounted
         }.getOrDefault(false)
     }
 
@@ -54,7 +43,7 @@ object BackendConnectionProbe {
             Result.success(resolved)
         } else {
             Result.failure(
-                IllegalStateException("No compatible response from $resolved — check backend, firewall, and self-exam routes.")
+                IllegalStateException("No healthy response from $resolved — check backend URL, deployment status, firewall, or internet connection.")
             )
         }
     }

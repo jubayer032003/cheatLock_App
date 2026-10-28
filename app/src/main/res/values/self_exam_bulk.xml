@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="se_bulk_saved_retry">Submission could not be confirmed. Retry to check the server and reuse your final answer snapshot. Answers stay locked while confirmation is pending.</string>
+    <string name="se_bulk_expired">The server deadline has passed. New answers cannot be accepted. Your saved submission is retained for review.</string>
+    <string name="se_bulk_conflict">This submission conflicts with a finalized exam or another saved snapshot. Your local submission is retained. Contact support if reconciliation fails.</string>
+    <string name="se_bulk_configuration">Submission needs an administrator configuration check. Your final answers are retained on this device.</string>
+    <string name="se_bulk_invalid">The saved submission could not be validated. Your final answers are retained. Contact support before starting another exam.</string>
+    <string name="se_bulk_sign_in">Sign in to the same account to recover your saved submission.</string>
+    <string name="se_bulk_retrying">Checking your saved submission…</string>
+</resources>

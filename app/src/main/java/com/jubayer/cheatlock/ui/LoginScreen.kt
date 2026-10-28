@@ -1,5 +1,6 @@
 package com.jubayer.cheatlock.ui
 
+import android.provider.Settings
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -24,14 +25,11 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.res.stringResource
+import com.jubayer.cheatlock.R
 import androidx.compose.ui.graphics.Brush
 import com.jubayer.cheatlock.model.UserAccount
 import com.jubayer.cheatlock.model.UserRole
@@ -39,16 +37,25 @@ import com.jubayer.cheatlock.ui.theme.*
 import com.jubayer.cheatlock.util.IdentifierNormalizer
 import kotlinx.coroutines.launch
 
-private val AuthBackground = Color(0xFF050A14)
-private val AuthBackgroundSecondary = Color(0xFF07101F)
-private val AuthSurface = Color(0xFF09172A)
-private val AuthBrand = Color(0xFF087CFF)
-private val AuthBrandBright = Color(0xFF169BFF)
-private val AuthBrandCyan = Color(0xFF16B8FF)
-private val AuthTextPrimary = Color(0xFFF5F8FF)
-private val AuthTextSecondary = Color(0xFFA7B3C7)
-private val AuthTextMuted = Color(0xFF718096)
-private val AuthBorder = Color(0xFF5078AA)
+private val AuthBackground: Color
+    @Composable get() = MaterialTheme.colorScheme.background
+private val AuthSurface: Color
+    @Composable get() = MaterialTheme.colorScheme.surface
+private val AuthBrand: Color
+    @Composable get() = MaterialTheme.colorScheme.primary
+private val AuthBrandBright: Color
+    @Composable get() = if (MaterialTheme.colorScheme.background == CheatLockLightBackground) Color(0xFF075EB8) else Color(0xFF169BFF)
+private val AuthBrandCyan: Color
+    @Composable get() = MaterialTheme.colorScheme.secondary
+private val AuthTextPrimary: Color
+    @Composable get() = MaterialTheme.colorScheme.onBackground
+private val AuthTextSecondary: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+private val AuthTextMuted: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+private val AuthBorder: Color
+    @Composable get() = MaterialTheme.colorScheme.outline
+
 
 /**
  * Professional Login & Registration Screen
@@ -68,8 +75,22 @@ fun LoginScreen(
     onSignupSuccess: (UserAccount) -> Unit = {},
     onStudentLogin: (UserAccount) -> Unit,
     onTeacherLogin: (UserAccount) -> Unit,
-    externalMessage: String? = null
+    externalMessage: String? = null,
+    appLanguage: AppLanguage = AppLanguage.English,
+    onLanguageChange: (AppLanguage) -> Unit = {},
+    appThemeMode: AppThemeMode = AppThemeMode.System,
+    onThemeModeChange: (AppThemeMode) -> Unit = {}
 ) {
+    val motionContext = LocalContext.current
+    val reducedMotion = remember {
+        runCatching {
+            Settings.Global.getFloat(
+                motionContext.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        }.getOrDefault(false)
+    }
     val scope = rememberCoroutineScope()
     var isSignupMode by remember { mutableStateOf(initialSignupMode) }
     var selectedRole by remember { mutableStateOf(UserRole.STUDENT) }
@@ -81,6 +102,9 @@ fun LoginScreen(
     var confirmPasswordVisible by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
+    var showServerSettings by remember { mutableStateOf(false) }
+    var serverInput by remember(configuredServerUrl) { mutableStateOf(configuredServerUrl) }
+    var isTestingServer by remember { mutableStateOf(false) }
 
     PremiumScreen(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -99,6 +123,10 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(26.dp)
             ) {
+                val isLightMode = MaterialTheme.colorScheme.background == CheatLockLightBackground
+                val isDark = with(AppUiPreferences) { appThemeMode.isDarkTheme() }
+                val isBn = appLanguage == AppLanguage.Bengali
+
                 // Premium Animated Header
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -106,56 +134,133 @@ fun LoginScreen(
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
-                        horizontalArrangement = Arrangement.Start
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
                             onClick = onBackToHome,
                             modifier = Modifier
                                 .size(44.dp)
                                 .clip(CircleShape)
-                                .background(AuthSurface.copy(alpha = 0.66f))
-                                .border(1.dp, AuthBorder.copy(alpha = 0.28f), CircleShape)
+                                .background(if (isLightMode) CheatLockLightSurface else AuthSurface.copy(alpha = 0.66f))
+                                .border(1.dp, if (isLightMode) CheatLockLightBorder else AuthBorder.copy(alpha = 0.28f), CircleShape)
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = AuthTextPrimary, modifier = Modifier.size(21.dp))
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                "Back",
+                                tint = if (isLightMode) CheatLockLightTextPrimary else AuthTextPrimary,
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
+
+                        // Quick Language & Theme Mode Selectors on Login & Signup
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Language [ BN | EN ]
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isLightMode) CheatLockLightSurface else AuthSurface.copy(alpha = 0.66f),
+                                border = BorderStroke(1.dp, if (isLightMode) CheatLockLightBorder else AuthBorder.copy(alpha = 0.28f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isBn) CheatLockLightPrimary else Color.Transparent)
+                                            .clickable { onLanguageChange(AppLanguage.Bengali) }
+                                            .padding(horizontal = 7.dp, vertical = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            "BN",
+                                            color = if (isBn) Color.White else if (isLightMode) CheatLockLightTextSecondary else AuthTextSecondary,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (!isBn) CheatLockLightPrimary else Color.Transparent)
+                                            .clickable { onLanguageChange(AppLanguage.English) }
+                                            .padding(horizontal = 7.dp, vertical = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            "EN",
+                                            color = if (!isBn) Color.White else if (isLightMode) CheatLockLightTextSecondary else AuthTextSecondary,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Theme [ ☀️ | 🌙 ]
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isLightMode) CheatLockLightSurface else AuthSurface.copy(alpha = 0.66f),
+                                border = BorderStroke(1.dp, if (isLightMode) CheatLockLightBorder else AuthBorder.copy(alpha = 0.28f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (!isDark) CheatLockLightPrimary else Color.Transparent)
+                                            .clickable { onThemeModeChange(AppThemeMode.Light) }
+                                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.WbSunny,
+                                            "Light Mode",
+                                            tint = if (!isDark) Color.White else if (isLightMode) CheatLockLightTextSecondary else AuthTextSecondary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isDark) CheatLockLightPrimary else Color.Transparent)
+                                            .clickable { onThemeModeChange(AppThemeMode.Dark) }
+                                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.NightsStay,
+                                            "Dark Mode",
+                                            tint = if (isDark) Color.White else if (isLightMode) CheatLockLightTextSecondary else AuthTextSecondary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-                    
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(130.dp)) {
-                        val transition = rememberInfiniteTransition(label = "auth-brand-rings")
-                        val pulse by transition.animateFloat(
-                            initialValue = 1f, targetValue = 1.1f,
-                            animationSpec = infiniteRepeatable(tween(2000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-                            label = "pulse"
-                        )
-                        
-                        Canvas(modifier = Modifier.fillMaxSize().scale(pulse)) {
-                            drawCircle(
-                                color = AuthBrand.copy(alpha = 0.12f),
-                                style = Stroke(width = 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 12f), 0f))
-                            )
-                            drawCircle(
-                                color = AuthBrandCyan.copy(alpha = 0.055f),
-                                radius = size.minDimension * 0.38f,
-                                style = Stroke(width = 1.dp.toPx())
-                            )
-                            drawArc(
-                                color = AuthBrand.copy(alpha = 0.62f),
-                                startAngle = 216f, sweepAngle = 82f, useCenter = false,
-                                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
-                            )
-                        }
-                        
+
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(118.dp)) {
                         Image(
-                            painter = painterResource(id = com.jubayer.cheatlock.R.drawable.cheatlock_logo_sidebar_svg),
+                            painter = painterResource(
+                                id = if (isLightMode) com.jubayer.cheatlock.R.drawable.cheatlock_logo_light
+                                     else com.jubayer.cheatlock.R.drawable.cheatlock_logo_sidebar_svg
+                            ),
                             contentDescription = "CheatLock Emblem",
                             modifier = Modifier.size(104.dp)
                         )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Professional Exam Integrity System",
+                        text = stringResource(R.string.professional_exam_integrity),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = AuthTextSecondary,
+                        color = if (isLightMode) CheatLockLightTextSecondary else AuthTextSecondary,
                         fontWeight = FontWeight.Normal,
                         textAlign = TextAlign.Center
                     )
@@ -165,11 +270,10 @@ fun LoginScreen(
                 AnimatedContent(
                     targetState = isSignupMode,
                     transitionSpec = {
-                        if (targetState) {
-                            (slideInHorizontally { it } + fadeIn()).togetherWith(slideOutHorizontally { -it } + fadeOut())
-                        } else {
-                            (slideInHorizontally { -it } + fadeIn()).togetherWith(slideOutHorizontally { it } + fadeOut())
-                        }.using(SizeTransform(clip = false))
+                        cheatLockAuthModeTransition(
+                            toSignup = targetState,
+                            reducedMotion = reducedMotion
+                        ).using(SizeTransform(clip = false))
                     },
                     label = "auth-mode"
                 ) { signupMode ->
@@ -180,7 +284,7 @@ fun LoginScreen(
                             verticalArrangement = Arrangement.spacedBy(18.dp)
                         ) {
                             Text(
-                                text = if (signupMode) "Create Your Account" else "Welcome Back",
+                                text = if (signupMode) stringResource(R.string.sign_up) else stringResource(R.string.login),
                                 style = MaterialTheme.typography.headlineSmall,
                                 color = AuthTextPrimary,
                                 fontWeight = FontWeight.ExtraBold,
@@ -188,7 +292,7 @@ fun LoginScreen(
                             )
                             if (signupMode) {
                                 Text(
-                                    text = "Join thousands of educators and students trusting CheatLock",
+                                    text = stringResource(R.string.security_priority_body),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = AuthTextSecondary,
                                     textAlign = TextAlign.Center,
@@ -206,7 +310,7 @@ fun LoginScreen(
                                 AuthOutlinedTextField(
                                     value = name,
                                     onValueChange = { name = it },
-                                    label = "Your Full Name",
+                                    label = stringResource(R.string.full_name),
                                     leadingIcon = Icons.Default.Person
                                 )
                             }
@@ -214,14 +318,14 @@ fun LoginScreen(
                             AuthOutlinedTextField(
                                 value = identifier,
                                 onValueChange = { identifier = it },
-                                label = "Student or Teacher ID",
+                                label = stringResource(R.string.email_platform_id),
                                 leadingIcon = Icons.Default.Badge
                             )
 
                             AuthOutlinedTextField(
                                 value = password,
                                 onValueChange = { password = it },
-                                label = "Password",
+                                label = stringResource(R.string.password),
                                 leadingIcon = Icons.Default.Lock,
                                 isPassword = true,
                                 passwordVisible = passwordVisible,
@@ -232,7 +336,7 @@ fun LoginScreen(
                                 AuthOutlinedTextField(
                                     value = confirmPassword,
                                     onValueChange = { confirmPassword = it },
-                                    label = "Confirm Password",
+                                    label = stringResource(R.string.confirm_password),
                                     leadingIcon = Icons.Default.Shield,
                                     isPassword = true,
                                     passwordVisible = confirmPasswordVisible,
@@ -241,7 +345,7 @@ fun LoginScreen(
                             }
 
                             AuthPrimaryButton(
-                                text = if (signupMode) "REGISTER NOW" else "SIGN IN",
+                                text = if (signupMode) stringResource(R.string.sign_up) else stringResource(R.string.login),
                                 onClick = {
                                     if (identifier.isBlank() || password.isBlank()) {
                                         message = "Please enter your ID and password."
@@ -271,10 +375,48 @@ fun LoginScreen(
 
                             TextButton(onClick = { isSignupMode = !isSignupMode; message = null }) {
                                 Text(
-                                    text = if (signupMode) "Already have an account? Login" else "New to CheatLock? Register here",
+                                    text = if (signupMode) stringResource(R.string.already_have_account) else stringResource(R.string.dont_have_account),
                                     color = AuthBrandBright,
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp
+                                )
+                            }
+
+                            TextButton(onClick = { showServerSettings = !showServerSettings }) {
+                                Text(
+                                    text = stringResource(R.string.server_settings),
+                                    color = AuthTextSecondary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            AnimatedVisibility(visible = showServerSettings) {
+                                ServerSettingsPanel(
+                                    activeServerUrl = serverUrl,
+                                    serverInput = serverInput,
+                                    isTesting = isTestingServer,
+                                    onServerInputChange = { serverInput = it },
+                                    onSave = {
+                                        if (serverInput.isBlank()) {
+                                            message = "Enter your Render backend URL."
+                                        } else {
+                                            isTestingServer = true
+                                            message = null
+                                            scope.launch {
+                                                onTestServerConnection(serverInput)
+                                                    .onSuccess { resolved ->
+                                                        onServerUrlSave(resolved)
+                                                        serverInput = resolved
+                                                        message = "Connected to $resolved"
+                                                    }
+                                                    .onFailure { error ->
+                                                        message = error.message ?: "Could not connect to this backend."
+                                                    }
+                                                isTestingServer = false
+                                            }
+                                        }
+                                    }
                                 )
                             }
 
@@ -326,21 +468,71 @@ private fun LoginDecorativeNebula() {
 }
 
 @Composable
+private fun ServerSettingsPanel(
+    activeServerUrl: String,
+    serverInput: String,
+    isTesting: Boolean,
+    onServerInputChange: (String) -> Unit,
+    onSave: () -> Unit
+) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val panelBg = if (isLight) CheatLockLightSurfaceSubtle else AuthSurface.copy(alpha = 0.42f)
+    val panelBorder = if (isLight) CheatLockLightBorder else AuthBorder.copy(alpha = 0.18f)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(panelBg)
+            .border(1.dp, panelBorder, RoundedCornerShape(14.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = "Active server: $activeServerUrl",
+            color = if (isLight) CheatLockLightTextSecondary else AuthTextMuted,
+            style = MaterialTheme.typography.labelSmall,
+            textAlign = TextAlign.Start,
+            modifier = Modifier.fillMaxWidth()
+        )
+        AuthOutlinedTextField(
+            value = serverInput,
+            onValueChange = onServerInputChange,
+            label = "Render backend URL",
+            leadingIcon = Icons.Default.Cloud
+        )
+        AuthPrimaryButton(
+            text = "TEST AND SAVE SERVER",
+            onClick = onSave,
+            loading = isTesting,
+            leadingIcon = Icons.Default.Sync,
+            modifier = Modifier.height(52.dp)
+        )
+    }
+}
+
+@Composable
 private fun AuthPanel(content: @Composable BoxScope.() -> Unit) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val panelBg = if (isLight) {
+        Brush.verticalGradient(listOf(Color.White, Color.White))
+    } else {
+        Brush.verticalGradient(
+            listOf(
+                AuthSurface.copy(alpha = 0.74f),
+                Color(0xFF050F1D).copy(alpha = 0.86f)
+            )
+        )
+    }
+    val panelBorder = if (isLight) CheatLockLightBorder else AuthBorder.copy(alpha = 0.30f)
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(22.dp))
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        AuthSurface.copy(alpha = 0.74f),
-                        Color(0xFF050F1D).copy(alpha = 0.86f)
-                    )
-                )
-            )
-            .border(1.dp, AuthBorder.copy(alpha = 0.30f), RoundedCornerShape(22.dp))
-            .padding(18.dp),
+            .background(panelBg)
+            .border(1.dp, panelBorder, RoundedCornerShape(22.dp))
+            .padding(20.dp),
         content = content
     )
 }
@@ -356,12 +548,15 @@ private fun AuthOutlinedTextField(
     passwordVisible: Boolean = false,
     onVisibilityToggle: (() -> Unit)? = null
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val iconColor = if (isLight) CheatLockLightPrimary else AuthBrandBright
+
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
         leadingIcon = leadingIcon?.let { icon ->
-            { Icon(icon, contentDescription = null, tint = AuthBrandBright, modifier = Modifier.size(24.dp)) }
+            { Icon(icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(22.dp)) }
         },
         trailingIcon = {
             if (isPassword && onVisibilityToggle != null) {
@@ -369,7 +564,7 @@ private fun AuthOutlinedTextField(
                     Icon(
                         imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                         contentDescription = if (passwordVisible) "Hide password" else "Show password",
-                        tint = AuthTextSecondary
+                        tint = if (isLight) CheatLockLightTextSecondary else AuthTextSecondary
                     )
                 }
             }
@@ -377,16 +572,16 @@ private fun AuthOutlinedTextField(
         visualTransformation = if (isPassword && !passwordVisible) PasswordVisualTransformation() else VisualTransformation.None,
         singleLine = true,
         shape = RoundedCornerShape(14.dp),
-        colors = TextFieldDefaults.colors(
-            focusedTextColor = AuthTextPrimary,
-            unfocusedTextColor = AuthTextPrimary,
-            focusedContainerColor = AuthSurface.copy(alpha = 0.56f),
-            unfocusedContainerColor = AuthSurface.copy(alpha = 0.48f),
-            focusedIndicatorColor = AuthBrand.copy(alpha = 0.80f),
-            unfocusedIndicatorColor = AuthBorder.copy(alpha = 0.28f),
-            focusedLabelColor = AuthTextSecondary,
-            unfocusedLabelColor = AuthTextSecondary,
-            cursorColor = AuthBrandCyan
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = if (isLight) CheatLockLightTextPrimary else AuthTextPrimary,
+            unfocusedTextColor = if (isLight) CheatLockLightTextPrimary else AuthTextPrimary,
+            focusedContainerColor = if (isLight) Color.White else AuthSurface.copy(alpha = 0.56f),
+            unfocusedContainerColor = if (isLight) Color.White else AuthSurface.copy(alpha = 0.48f),
+            focusedBorderColor = if (isLight) CheatLockLightPrimary else AuthBrand.copy(alpha = 0.80f),
+            unfocusedBorderColor = if (isLight) CheatLockLightBorder else AuthBorder.copy(alpha = 0.28f),
+            focusedLabelColor = if (isLight) CheatLockLightPrimary else AuthBrandBright,
+            unfocusedLabelColor = if (isLight) CheatLockLightTextSecondary else AuthTextSecondary,
+            cursorColor = if (isLight) CheatLockLightPrimary else AuthBrandCyan
         ),
         modifier = modifier
             .fillMaxWidth()
@@ -403,6 +598,20 @@ private fun AuthPrimaryButton(
     loading: Boolean = false,
     leadingIcon: ImageVector? = null
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val buttonGradient = if (isLight) {
+        Brush.horizontalGradient(listOf(CheatLockLightPrimary, CheatLockLightPrimaryDark))
+    } else {
+        Brush.horizontalGradient(
+            listOf(
+                Color(0xFF075BFF),
+                AuthBrand,
+                AuthBrandCyan
+            )
+        )
+    }
+    val borderColor = if (isLight) CheatLockLightPrimary.copy(alpha = 0.3f) else AuthBrandCyan.copy(alpha = 0.55f)
+
     Button(
         onClick = onClick,
         enabled = enabled && !loading,
@@ -418,29 +627,21 @@ private fun AuthPrimaryButton(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(RoundedCornerShape(14.dp))
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(
-                            Color(0xFF075BFF),
-                            AuthBrand,
-                            AuthBrandCyan
-                        )
-                    )
-                )
-                .border(1.dp, AuthBrandCyan.copy(alpha = 0.55f), RoundedCornerShape(14.dp)),
+                .background(buttonGradient)
+                .border(1.dp, borderColor, RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
         ) {
             if (loading) {
-                CircularProgressIndicator(color = AuthTextPrimary, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+                CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
                     if (leadingIcon != null) {
-                        Icon(leadingIcon, contentDescription = null, tint = AuthTextPrimary, modifier = Modifier.size(24.dp))
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Icon(leadingIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                     }
                     Text(
                         text = text,
-                        color = AuthTextPrimary,
+                        color = Color.White,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.6.sp
@@ -470,6 +671,11 @@ private fun RegistrationTrustItem(
     icon: ImageVector,
     modifier: Modifier = Modifier
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val iconBg = if (isLight) CheatLockLightPrimaryContainer else AuthBrand.copy(alpha = 0.12f)
+    val iconBorder = if (isLight) CheatLockLightPrimary.copy(alpha = 0.25f) else AuthBrand.copy(alpha = 0.30f)
+    val iconTint = if (isLight) CheatLockLightPrimary else AuthBrandBright
+
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -479,14 +685,14 @@ private fun RegistrationTrustItem(
             modifier = Modifier
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(AuthBrand.copy(alpha = 0.12f))
-                .border(1.dp, AuthBrand.copy(alpha = 0.30f), CircleShape),
+                .background(iconBg)
+                .border(1.dp, iconBorder, CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = null, tint = AuthBrandBright, modifier = Modifier.size(26.dp))
+            Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(26.dp))
         }
-        Text(title, color = AuthTextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp, textAlign = TextAlign.Center)
-        Text(subtitle, color = AuthTextSecondary, fontSize = 10.sp, lineHeight = 15.sp, textAlign = TextAlign.Center)
+        Text(title, color = if (isLight) CheatLockLightTextPrimary else AuthTextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp, textAlign = TextAlign.Center)
+        Text(subtitle, color = if (isLight) CheatLockLightTextSecondary else AuthTextSecondary, fontSize = 10.sp, lineHeight = 15.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -496,14 +702,18 @@ private fun LoginAdvancedRoleToggle(
     allowTeacher: Boolean,
     onRoleSelected: (UserRole) -> Unit
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
     val studentSelected = selectedRole == UserRole.STUDENT
+    val containerBg = if (isLight) CheatLockLightSurfaceSubtle else AuthSurface.copy(alpha = 0.56f)
+    val containerBorder = if (isLight) CheatLockLightBorder else AuthBorder.copy(alpha = 0.22f)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(54.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(AuthSurface.copy(alpha = 0.56f))
-            .border(1.dp, AuthBorder.copy(alpha = 0.22f), RoundedCornerShape(14.dp))
+            .background(containerBg)
+            .border(1.dp, containerBorder, RoundedCornerShape(14.dp))
             .padding(4.dp)
     ) {
         Box(
@@ -513,25 +723,33 @@ private fun LoginAdvancedRoleToggle(
                 .clip(RoundedCornerShape(11.dp))
                 .background(
                     if (studentSelected) {
-                        Brush.horizontalGradient(listOf(Color(0xFF075BFF), AuthBrand))
+                        if (isLight) Brush.horizontalGradient(listOf(CheatLockLightPrimary, CheatLockLightPrimary))
+                        else Brush.horizontalGradient(listOf(Color(0xFF075BFF), AuthBrand))
                     } else {
                         Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))
                     }
                 )
                 .border(
                     1.dp,
-                    if (studentSelected) AuthBrandCyan.copy(alpha = 0.34f) else Color.Transparent,
+                    if (studentSelected) {
+                        if (isLight) Color.Transparent else AuthBrandCyan.copy(alpha = 0.34f)
+                    } else Color.Transparent,
                     RoundedCornerShape(11.dp)
                 )
                 .clickable { onRoleSelected(UserRole.STUDENT) },
             contentAlignment = Alignment.Center
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                Icon(Icons.Default.School, contentDescription = null, tint = if (studentSelected) AuthBrandCyan else AuthTextSecondary, modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.Default.School,
+                    contentDescription = null,
+                    tint = if (studentSelected) Color.White else (if (isLight) CheatLockLightTextSecondary else AuthTextSecondary),
+                    modifier = Modifier.size(20.dp)
+                )
                 Spacer(Modifier.width(8.dp))
                 Text(
                     "STUDENT",
-                    color = if (studentSelected) AuthTextPrimary else AuthTextSecondary,
+                    color = if (studentSelected) Color.White else (if (isLight) CheatLockLightTextSecondary else AuthTextSecondary),
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 12.sp,
                     letterSpacing = 0.8.sp
@@ -545,25 +763,33 @@ private fun LoginAdvancedRoleToggle(
                 .clip(RoundedCornerShape(11.dp))
                 .background(
                     if (!studentSelected) {
-                        Brush.horizontalGradient(listOf(Color(0xFF075BFF), AuthBrand))
+                        if (isLight) Brush.horizontalGradient(listOf(CheatLockLightPrimary, CheatLockLightPrimary))
+                        else Brush.horizontalGradient(listOf(Color(0xFF075BFF), AuthBrand))
                     } else {
                         Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))
                     }
                 )
                 .border(
                     1.dp,
-                    if (!studentSelected) AuthBrandCyan.copy(alpha = 0.34f) else Color.Transparent,
+                    if (!studentSelected) {
+                        if (isLight) Color.Transparent else AuthBrandCyan.copy(alpha = 0.34f)
+                    } else Color.Transparent,
                     RoundedCornerShape(11.dp)
                 )
                 .clickable(enabled = allowTeacher) { onRoleSelected(UserRole.TEACHER) },
             contentAlignment = Alignment.Center
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                Icon(Icons.Default.PersonOutline, contentDescription = null, tint = if (!studentSelected && allowTeacher) AuthBrandCyan else AuthTextSecondary, modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.Default.PersonOutline,
+                    contentDescription = null,
+                    tint = if (!studentSelected && allowTeacher) Color.White else (if (isLight) CheatLockLightTextSecondary else AuthTextSecondary),
+                    modifier = Modifier.size(20.dp)
+                )
                 Spacer(Modifier.width(8.dp))
                 Text(
                     "TEACHER",
-                    color = if (!studentSelected && allowTeacher) AuthTextPrimary else AuthTextSecondary,
+                    color = if (!studentSelected && allowTeacher) Color.White else (if (isLight) CheatLockLightTextSecondary else AuthTextSecondary),
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 12.sp,
                     letterSpacing = 0.8.sp

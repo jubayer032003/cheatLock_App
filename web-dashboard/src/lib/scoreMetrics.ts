@@ -32,6 +32,10 @@ export function mergeAuthoritativeStudent(previous: LiveStudent | undefined, inc
   };
 
   if (!previous) return canonicalIncoming;
+  if (previous.attemptStartedAt && incoming.attemptStartedAt) {
+    if (incoming.attemptStartedAt < previous.attemptStartedAt) return previous;
+    if (incoming.attemptStartedAt > previous.attemptStartedAt) return canonicalIncoming;
+  }
 
   const previousUpdatedAt = scoreUpdatedAt(previous);
   const incomingUpdatedAt = scoreUpdatedAt(canonicalIncoming);

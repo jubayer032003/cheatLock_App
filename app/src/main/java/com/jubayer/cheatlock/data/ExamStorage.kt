@@ -2,6 +2,7 @@ package com.jubayer.cheatlock.data
 
 import android.content.Context
 import com.jubayer.cheatlock.model.ExamSubmission
+import com.jubayer.cheatlock.model.ExamAttemptKey
 import com.jubayer.cheatlock.model.ExamSession
 import com.jubayer.cheatlock.model.ExamSessionStatus
 import com.jubayer.cheatlock.model.StudentAnswer
@@ -17,16 +18,13 @@ class ExamStorage(context: Context) {
         Context.MODE_PRIVATE
     )
 
-    fun saveAnswer(questionIndex: Int, answer: String) {
-        prefs.edit()
-            .putString("answer_$questionIndex", answer)
-            .apply()
+    internal fun saveAnswer(attempt: ExamAttemptKey?, questionIndex: Int, answer: String) {
+        if (attempt == null) return
+        prefs.edit().putString(attempt.answerKey(questionIndex), answer).apply()
     }
 
-    fun getAnswer(questionIndex: Int): String {
-        return prefs.getString("answer_$questionIndex", "") ?: ""
-    }
-
+    internal fun getAnswer(attempt: ExamAttemptKey?, questionIndex: Int): String =
+        attempt?.let { prefs.getString(it.answerKey(questionIndex), "") }.orEmpty()
     fun saveWarnings(appWarnings: Int, faceWarnings: Int) {
         prefs.edit()
             .putInt("app_warnings", appWarnings)
@@ -97,37 +95,7 @@ class ExamStorage(context: Context) {
     fun getSubmissions(): List<ExamSubmission> {
         val raw = prefs.getString("submissions", null) ?: return emptyList()
         return try {
-            val json = JSONArray(raw)
-
-            List(json.length()) { index ->
-                val item = json.getJSONObject(index)
-                val answersJson = item.optJSONArray("answers") ?: JSONArray()
-                val answers = List(answersJson.length()) { answerIndex ->
-                    val answer = answersJson.getJSONObject(answerIndex)
-                    StudentAnswer(
-                        questionIndex = answer.optInt("questionIndex", 0),
-                        questionText = answer.optString("questionText", ""),
-                        answerText = answer.optString("answerText", "")
-                    )
-                }
-
-                ExamSubmission(
-                    id = item.optStringOrNull("id"),
-                    examId = item.optStringOrNull("examId"),
-                    studentId = item.optString("studentId", "unknown"),
-                    answers = answers,
-                    appSwitchWarnings = item.optInt("appSwitchWarnings", 0),
-                    faceMissingWarnings = item.optInt("faceMissingWarnings", 0),
-                    audioWarnings = item.optInt("audioWarnings", 0),
-                    phoneWarnings = item.optInt("phoneWarnings", 0),
-                    totalWarnings = item.optInt("totalWarnings", 0),
-                    riskLevel = item.optString("riskLevel", "LOW"),
-                    submittedAt = item.optLong("submittedAt", 0L),
-                    grade = item.optDoubleOrNull("grade"),
-                    feedback = item.optStringOrNull("feedback"),
-                    gradedAt = item.optStringOrNull("gradedAt")
-                )
-            }
+            SubmissionHistoryCodec.decode(raw)
         } catch (e: Exception) {
             android.util.Log.e("ExamStorage", "Error parsing submissions JSON", e)
             emptyList()
@@ -188,46 +156,17 @@ class ExamStorage(context: Context) {
             }
     }
 
-    fun clearExam() {
-        prefs.edit()
-            .remove("app_warnings")
-            .remove("face_warnings")
-            .apply()
-
+    internal fun clearExam(attempt: ExamAttemptKey? = null) {
         prefs.edit().apply {
-            repeat(20) { index ->
-                remove("answer_$index")
-            }
+            remove("app_warnings")
+            remove("face_warnings")
+            prefs.all.keys.filter { key ->
+                if (attempt == null) key.startsWith("answer_") else key.startsWith(attempt.prefix)
+            }.forEach { remove(it) }
         }.apply()
     }
-
     private fun encodeSubmissions(submissions: List<ExamSubmission>): String {
-        val json = JSONArray()
-
-        submissions.forEach { submission ->
-            val answersJson = JSONArray()
-            submission.answers.forEach { answer ->
-                answersJson.put(
-                    JSONObject()
-                        .put("questionIndex", answer.questionIndex)
-                        .put("questionText", answer.questionText)
-                        .put("answerText", answer.answerText)
-                )
-            }
-
-            json.put(
-                JSONObject()
-                    .put("studentId", submission.studentId)
-                    .put("answers", answersJson)
-                    .put("appSwitchWarnings", submission.appSwitchWarnings)
-                    .put("faceMissingWarnings", submission.faceMissingWarnings)
-                    .put("totalWarnings", submission.totalWarnings)
-                    .put("riskLevel", submission.riskLevel)
-                    .put("submittedAt", submission.submittedAt)
-            )
-        }
-
-        return json.toString()
+        return SubmissionHistoryCodec.encode(submissions)
     }
 
     private fun encodeAccounts(accounts: List<UserAccount>): String {

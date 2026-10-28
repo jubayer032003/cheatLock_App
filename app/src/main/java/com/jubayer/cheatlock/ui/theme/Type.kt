@@ -18,14 +18,14 @@ val Typography = Typography(
         fontWeight = FontWeight.Black,
         fontSize = 42.sp,
         lineHeight = 50.sp,
-        letterSpacing = (-1).sp
+        letterSpacing = 0.sp
     ),
     displayMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.ExtraBold,
         fontSize = 36.sp,
         lineHeight = 44.sp,
-        letterSpacing = (-0.5).sp
+        letterSpacing = 0.sp
     ),
     displaySmall = TextStyle(
         fontFamily = FontFamily.SansSerif,

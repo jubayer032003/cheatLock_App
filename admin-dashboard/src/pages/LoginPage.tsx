@@ -81,7 +81,7 @@ export function LoginPage() {
               <span className="field-label">Password</span>
               <div className="relative">
                 <LockKeyhole className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                <input className="field-input pl-10 pr-12" type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••••••" required />
+                <input className="field-input pl-10 pr-12" type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••••••" autoComplete="current-password" required />
                 <button className="absolute right-2 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 dark:hover:bg-white/10" type="button" onClick={() => setShowPassword((current) => !current)} title={showPassword ? "Hide password" : "Show password"}>
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>

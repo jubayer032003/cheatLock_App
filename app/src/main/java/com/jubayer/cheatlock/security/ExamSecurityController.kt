@@ -25,18 +25,21 @@ class ExamSecurityController(
     fun isActive(): Boolean = active
 
     fun prepareLockTaskForExamStart() {
-        startLockTaskIfNeeded()
+        // Window flags (FLAG_SECURE, FLAG_KEEP_SCREEN_ON) and Immersive mode handle exam isolation safely
+        // without triggering Android OS Screen Pinning keyguard lock/screen off side-effects.
     }
 
-    fun setEnabled(enabled: Boolean) {
+    fun setEnabled(enabled: Boolean, keepScreenOnAfterDisable: Boolean = false) {
         if (enabled && !active) {
             applyProtection(allowLockTaskPrompt = true)
             active = true
         } else if (enabled) {
             applyProtection(allowLockTaskPrompt = false)
-        } else if (active || lockTaskStartAttempted || isLockTaskModeActive()) {
-            removeProtection()
+        } else if (active || lockTaskStartAttempted) {
+            removeProtection(keepScreenOnAfterDisable)
             active = false
+        } else if (!keepScreenOnAfterDisable) {
+            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 
@@ -60,17 +63,18 @@ class ExamSecurityController(
             }
         }
 
-        if (allowLockTaskPrompt) {
-            startLockTaskIfNeeded()
-        }
-
         enterImmersiveMode()
         registerScreenCaptureCallback()
     }
 
-    private fun removeProtection() {
+    private fun removeProtection(keepScreenOnAfterDisable: Boolean) {
         val window = activity.window
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (keepScreenOnAfterDisable) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching {
@@ -80,33 +84,13 @@ class ExamSecurityController(
             }
         }
 
-        // Release native Android screen pinning / Lock Task Mode
-        runCatching {
-            activity.stopLockTask()
-        }.onFailure { error ->
-            Log.w("CHEATLOCK_FLOW", "Failed to stopLockTask(): ${error.message}")
-        }
+        lockTaskStartAttempted = false
 
         exitImmersiveMode()
         unregisterScreenCaptureCallback()
-        lockTaskStartAttempted = false
     }
 
-    private fun startLockTaskIfNeeded() {
-        if (lockTaskStartAttempted || isLockTaskModeActive()) return
 
-        lockTaskStartAttempted = true
-        runCatching {
-            activity.startLockTask()
-        }.onFailure { error ->
-            Log.w("CHEATLOCK_FLOW", "Failed to startLockTask(): ${error.message}")
-        }
-    }
-
-    private fun isLockTaskModeActive(): Boolean {
-        val activityManager = activity.getSystemService(ActivityManager::class.java) ?: return false
-        return activityManager.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
-    }
 
     private fun enterImmersiveMode() {
         WindowCompat.setDecorFitsSystemWindows(activity.window, false)

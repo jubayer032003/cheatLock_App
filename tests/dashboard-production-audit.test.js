@@ -84,8 +84,8 @@ test("question builder does not claim unsaved draft changes are persisted", () =
 
 test("student proctoring sockets join exam rooms and reconcile disconnect presence", () => {
   const source = read("backend/src/socket/proctoring.js");
-  assert.match(source, /socket\.join\(examRoom\)/);
+  assert.match(source, /socket\.join\(studentRoom\)/);
   assert.match(source, /socket\.on\("disconnect"/);
-  assert.match(source, /candidate\.user\?\.identifier === socket\.user\.identifier/);
+  assert.match(source, /candidate\.data\?\.studentId === socket\.user\.identifier/);
   assert.match(source, /broadcastSessionState\(io, "student_left_exam"/);
 });

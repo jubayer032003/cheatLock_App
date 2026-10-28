@@ -41,6 +41,8 @@ import type {
   IntegrityDecision,
 } from "../types";
 import { Socket } from "socket.io-client";
+import { isOlderAttempt, sameMonitoringAttempt, shouldAcceptMonitoringUpdate, monitoringAlertId } from "../lib/monitoringState";
+import { RequestGate } from "../lib/requestGate";
 
 type FilterState = "ALL" | StudentStatus;
 const ENABLE_PROCTORING_TEST_TOOLS = import.meta.env.VITE_ENABLE_PROCTORING_TEST_TOOLS === "true";
@@ -78,19 +80,28 @@ export function LiveProctoringPage() {
   const pendingCommandKeyRef = useRef("");
   const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
 
+  const requestGate = useRef(new RequestGate(examId));
+  requestGate.current.selectScope(examId);
+  const dataRef = useRef(data);
+  dataRef.current = data;
+
   const loadLiveData = useCallback(async () => {
     if (!examId) return;
     setError("");
+    const request = requestGate.current.begin(examId);
+    if (!request) return;
     try {
       const [liveData, examDetails] = await Promise.all([
         fetchLiveProctoring(examId),
         fetchTeacherExam(examId),
       ]);
+      if (!requestGate.current.isCurrent(request)) return;
       setData((current) => {
         if (!current) return liveData;
         const mergedStudents = liveData.activeStudents.map((newStudent) => {
-          const prev = current.activeStudents.find((student) => student.studentId === newStudent.studentId);
-          const scoreSafeStudent = mergeAuthoritativeStudent(prev, newStudent);
+          const previous = current.activeStudents.find((student) => student.studentId === newStudent.studentId);
+          const scoreSafeStudent = mergeAuthoritativeStudent(previous, newStudent);
+          const prev = sameMonitoringAttempt(previous, scoreSafeStudent) ? previous : undefined;
           if (prev && scoreUpdatedAt(prev) > scoreUpdatedAt(scoreSafeStudent)) return prev;
           return {
             ...scoreSafeStudent,
@@ -114,37 +125,57 @@ export function LiveProctoringPage() {
         const incoming = liveData.activeStudents.find((student) => student.studentId === current.studentId);
         return incoming ? mergeAuthoritativeStudent(current, incoming) : current;
       });
-    } catch (err: any) {
-      setError(readErrorMessage(err, "Could not load live proctoring."));
+      setFullscreenStudent((current) => {
+        if (!current) return null;
+        const incoming = liveData.activeStudents.find((student) => student.studentId === current.studentId);
+        return incoming ? mergeAuthoritativeStudent(current, incoming) : null;
+      });    } catch (err: any) {
+      if (requestGate.current.isCurrent(request)) setError(readErrorMessage(err, "Could not load live proctoring."));
+    } finally {
+      if (requestGate.current.isCurrent(request)) setLoading(false);
     }
   }, [examId]);
 
   useEffect(() => {
     setLoading(true);
-    loadLiveData().finally(() => setLoading(false));
+    setData(null);
+    setExam(null);
+    setSelectedStudent(null);
+    setFullscreenStudent(null);
+    setAlertFeed([]);
+    setActiveAlert(null);
+    setCommandFeedback(null);
+    setLastSyncedAt(null);
+    void loadLiveData();
+    return () => requestGate.current.invalidate();
   }, [loadLiveData]);
 
   useEffect(() => {
     if (!examId) return;
 
+    setSocketState("Connecting");
     const socket = createProctoringSocket();
+    const seenAlerts = new Set<string>();
+    const latestStudents = new Map<string, LiveStudent>();
     socketRef.current = socket;
 
     const syncStudentList = (event: LiveStudentListEvent) => {
+      if (event.examId !== examId) return;
       setData((current) => {
         if (!current) return current;
         const mergedStudents = event.students.map((newStudent) => {
-          const prev = current.activeStudents.find((s) => s.studentId === newStudent.studentId);
-          const scoreSafeStudent = mergeAuthoritativeStudent(prev, newStudent);
+          const previous = current.activeStudents.find((s) => s.studentId === newStudent.studentId);
+          const scoreSafeStudent = mergeAuthoritativeStudent(previous, newStudent);
+          const prev = sameMonitoringAttempt(previous, scoreSafeStudent) ? previous : undefined;
           if (prev && scoreUpdatedAt(prev) > scoreUpdatedAt(scoreSafeStudent)) return prev;
           return {
             ...scoreSafeStudent,
-            screenBase64: prev?.screenBase64,
-            faceStatus: prev?.faceStatus,
-            audioStatus: prev?.audioStatus,
-            focusStatus: prev?.focusStatus,
-            multiMonitorStatus: prev?.multiMonitorStatus,
-            clipboardStatus: prev?.clipboardStatus,
+            screenBase64: scoreSafeStudent.screenBase64 ?? prev?.screenBase64,
+            faceStatus: scoreSafeStudent.faceStatus ?? prev?.faceStatus,
+            audioStatus: scoreSafeStudent.audioStatus ?? prev?.audioStatus,
+            focusStatus: scoreSafeStudent.focusStatus ?? prev?.focusStatus,
+            multiMonitorStatus: scoreSafeStudent.multiMonitorStatus ?? prev?.multiMonitorStatus,
+            clipboardStatus: scoreSafeStudent.clipboardStatus ?? prev?.clipboardStatus,
             violationsList: prev?.violationsList || [],
           };
         });
@@ -154,6 +185,11 @@ export function LiveProctoringPage() {
     };
 
     const mergeStudentUpdate = (student: LiveStudent, eventName?: string) => {
+      const currentRow = dataRef.current?.exam.id === examId ? dataRef.current.activeStudents.find((row) => row.studentId === student.studentId) : undefined;
+      const known = latestStudents.get(student.studentId);
+      const previous = known && currentRow ? mergeAuthoritativeStudent(known, currentRow) : known || currentRow;
+      if (!shouldAcceptMonitoringUpdate(previous, student)) return;
+      latestStudents.set(student.studentId, student);
       const alertMsg = student.latestAlert || "";
       const percentage = scorePercentage(student);
       if (percentage >= 75 && eventName === "AI_ALERT") {
@@ -170,43 +206,17 @@ export function LiveProctoringPage() {
       let multiMonitorStatus = student.multiMonitorStatus;
       let clipboardStatus = student.clipboardStatus;
 
-      if (alertMsg.includes("FACE_MISSING") || alertMsg.includes("missing")) {
-        faceStatus = "Missing";
-      } else if (alertMsg.includes("MULTIPLE_FACES") || alertMsg.includes("multiple")) {
-        faceStatus = "Multiple detected";
-      } else if (alertMsg.includes("FACE_MATCH") || alertMsg.includes("matching")) {
-        faceStatus = "Matching";
-      }
-
-      if (alertMsg.includes("VOICE_DETECTED") || alertMsg.includes("speech") || alertMsg.includes("sound")) {
-        audioStatus = "Speech detected";
-      } else if (alertMsg.includes("NO_SPEECH") || alertMsg.includes("quiet")) {
-        audioStatus = "Quiet";
-      } else if (alertMsg.includes("mic") || alertMsg.includes("microphone")) {
-        audioStatus = "Mic issue";
-      }
-
-      if (alertMsg.includes("WINDOW_BLURRED") || alertMsg.includes("focus") || alertMsg.includes("tab")) {
-        focusStatus = "Blurred";
-      } else if (alertMsg.includes("WINDOW_FOCUSED") || alertMsg.includes("focused")) {
-        focusStatus = "Focused";
-      }
-
-      if (alertMsg.includes("MONITOR") || alertMsg.includes("display")) {
-        multiMonitorStatus = "Multi-monitor alert";
-      }
-
-      if (alertMsg.includes("clipboard") || alertMsg.includes("copy") || alertMsg.includes("paste")) {
-        clipboardStatus = "Clipboard alert";
-      }
+      // Historical alert text is not a current sensor-health observation.
 
       const severity: "low" | "medium" | "high" = percentage >= 70 ? "high" : percentage >= 40 ? "medium" : "low";
 
       setData((current) => {
         if (!current) return current;
         const exists = current.activeStudents.some((item) => item.studentId === student.studentId);
-        const prev = current.activeStudents.find((item) => item.studentId === student.studentId);
+        let prev = current.activeStudents.find((item) => item.studentId === student.studentId);
+        if (isOlderAttempt(prev, student)) return current;
         const scoreSafeStudent = mergeAuthoritativeStudent(prev, student);
+        if (!sameMonitoringAttempt(prev, scoreSafeStudent)) prev = undefined;
         if (SCORE_TRACE_ENABLED) {
           console.debug("[DASHBOARD_SCORE_SOURCE]", {
             studentSession: student.sessionId || "unknown",
@@ -236,11 +246,11 @@ export function LiveProctoringPage() {
           ...prev,
           ...scoreSafeStudent,
           suspicionScore: scorePercentage(scoreSafeStudent),
-          faceStatus: faceStatus || prev?.faceStatus || "Matching",
-          audioStatus: audioStatus || prev?.audioStatus || "Quiet",
-          focusStatus: focusStatus || prev?.focusStatus || "Focused",
-          multiMonitorStatus: multiMonitorStatus || prev?.multiMonitorStatus || "Normal",
-          clipboardStatus: clipboardStatus || prev?.clipboardStatus || "Normal",
+          faceStatus: faceStatus || prev?.faceStatus || "Unknown",
+          audioStatus: audioStatus || prev?.audioStatus || "Unknown",
+          focusStatus: focusStatus || prev?.focusStatus || "Unknown",
+          multiMonitorStatus: multiMonitorStatus || prev?.multiMonitorStatus || "Unknown",
+          clipboardStatus: clipboardStatus || prev?.clipboardStatus || "Unknown",
           violationsList,
         };
 
@@ -254,6 +264,8 @@ export function LiveProctoringPage() {
 
       setSelectedStudent((current) => {
         if (current?.studentId !== student.studentId) return current;
+        if (isOlderAttempt(current, student)) return current;
+        if (!sameMonitoringAttempt(current, student)) return mergeAuthoritativeStudent(current, student);
         const scoreSafeStudent = mergeAuthoritativeStudent(current, student);
         const violationsList = scoreSafeStudent.latestAlert && current.latestAlert !== scoreSafeStudent.latestAlert
           ? [{ type: eventName || "ALERT", message: scoreSafeStudent.latestAlert, timestamp: Date.now() }, ...(current.violationsList || [])].slice(0, 55)
@@ -263,34 +275,39 @@ export function LiveProctoringPage() {
           ...current,
           ...scoreSafeStudent,
           suspicionScore: scorePercentage(scoreSafeStudent),
-          faceStatus: faceStatus || current.faceStatus || "Matching",
-          audioStatus: audioStatus || current.audioStatus || "Quiet",
-          focusStatus: focusStatus || current.focusStatus || "Focused",
-          multiMonitorStatus: multiMonitorStatus || current.multiMonitorStatus || "Normal",
-          clipboardStatus: clipboardStatus || current.clipboardStatus || "Normal",
+          faceStatus: faceStatus || current.faceStatus || "Unknown",
+          audioStatus: audioStatus || current.audioStatus || "Unknown",
+          focusStatus: focusStatus || current.focusStatus || "Unknown",
+          multiMonitorStatus: multiMonitorStatus || current.multiMonitorStatus || "Unknown",
+          clipboardStatus: clipboardStatus || current.clipboardStatus || "Unknown",
           violationsList,
         };
       });
 
       setFullscreenStudent((current) => {
         if (current?.studentId !== student.studentId) return current;
+        if (isOlderAttempt(current, student)) return current;
+        if (!sameMonitoringAttempt(current, student)) return mergeAuthoritativeStudent(current, student);
         const scoreSafeStudent = mergeAuthoritativeStudent(current, student);
         return {
           ...current,
           ...scoreSafeStudent,
           suspicionScore: scorePercentage(scoreSafeStudent),
-          faceStatus: faceStatus || current.faceStatus || "Matching",
-          audioStatus: audioStatus || current.audioStatus || "Quiet",
-          focusStatus: focusStatus || current.focusStatus || "Focused",
-          multiMonitorStatus: multiMonitorStatus || current.multiMonitorStatus || "Normal",
-          clipboardStatus: clipboardStatus || current.clipboardStatus || "Normal",
+          faceStatus: faceStatus || current.faceStatus || "Unknown",
+          audioStatus: audioStatus || current.audioStatus || "Unknown",
+          focusStatus: focusStatus || current.focusStatus || "Unknown",
+          multiMonitorStatus: multiMonitorStatus || current.multiMonitorStatus || "Unknown",
+          clipboardStatus: clipboardStatus || current.clipboardStatus || "Unknown",
         };
       });
 
-      if (student.latestAlert) {
+      const alertId = monitoringAlertId(student);
+      if (eventName === "AI_ALERT" && student.latestAlert && !seenAlerts.has(alertId)) {
+        seenAlerts.add(alertId);
+        if (seenAlerts.size > 500) seenAlerts.delete(seenAlerts.values().next().value!);
         setAlertFeed((current) => [
           {
-            id: `${student.studentId}-${Date.now()}`,
+            id: alertId,
             studentId: student.studentId,
             student: student.studentName || student.studentId,
             alert: student.latestAlert,
@@ -325,7 +342,7 @@ export function LiveProctoringPage() {
 
     socket.on("screen_telemetry_uploaded", (payload: any) => {
       mergeStudentUpdate(payload, "SCREEN_TELEMETRY_UPLOADED");
-      const screenSrc = payload.screenBase64 || payload.base64 || payload.screenPreviewUrl || payload.previewUrl || payload.previewBase64;
+      const screenSrc = payload.screenPreviewUrl || payload.screenBase64 || "";
       const payloadUpdatedAt = scoreUpdatedAt(payload);
       const receivedAt = Date.now();
       setData((current) => {
@@ -333,20 +350,20 @@ export function LiveProctoringPage() {
         return {
           ...current,
           activeStudents: current.activeStudents.map((item) =>
-            item.studentId === payload.studentId && scoreUpdatedAt(item) <= payloadUpdatedAt
+            item.studentId === payload.studentId && !isOlderAttempt(item, payload) && scoreUpdatedAt(item) <= payloadUpdatedAt
               ? { ...item, screenBase64: screenSrc, lastScreenUpdatedAt: receivedAt }
               : item
           ),
         };
       });
       setSelectedStudent((current) => {
-        if (current && current.studentId === payload.studentId && scoreUpdatedAt(current) <= payloadUpdatedAt) {
+        if (current && current.studentId === payload.studentId && !isOlderAttempt(current, payload) && scoreUpdatedAt(current) <= payloadUpdatedAt) {
           return { ...current, screenBase64: screenSrc, lastScreenUpdatedAt: receivedAt };
         }
         return current;
       });
       setFullscreenStudent((current) => {
-        if (current && current.studentId === payload.studentId && scoreUpdatedAt(current) <= payloadUpdatedAt) {
+        if (current && current.studentId === payload.studentId && !isOlderAttempt(current, payload) && scoreUpdatedAt(current) <= payloadUpdatedAt) {
           return { ...current, screenBase64: screenSrc, lastScreenUpdatedAt: receivedAt };
         }
         return current;
@@ -358,6 +375,7 @@ export function LiveProctoringPage() {
     socket.connect();
 
     return () => {
+      socket.removeAllListeners();
       socket.disconnect();
     };
   }, [examId]);
@@ -379,12 +397,13 @@ export function LiveProctoringPage() {
         studentId,
         command,
         message,
+        attemptStartedAt: data?.activeStudents.find((student) => student.studentId === studentId)?.attemptStartedAt,
       },
       (timeoutError: Error | null, ack: any) => {
         if (pendingCommandKeyRef.current === key) pendingCommandKeyRef.current = "";
         setPendingCommandKey("");
         if (timeoutError) {
-          const messageText = "The student did not acknowledge this command within 10 seconds.";
+          const messageText = "The server did not acknowledge dispatch within 10 seconds. Student execution is unconfirmed.";
           setError(messageText);
           setCommandFeedback({ tone: "danger", message: messageText });
           return;
@@ -395,7 +414,7 @@ export function LiveProctoringPage() {
           setCommandFeedback({ tone: "danger", message: messageText });
           return;
         }
-        setCommandFeedback({ tone: "success", message: `${commandLabel(command)} sent to selected student.` });
+        setCommandFeedback({ tone: "info", message: `${commandLabel(command)} dispatched by server. Student receipt and execution are unconfirmed.` });
       }
     );
   };

@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { config } from "../config.js";
+import { createSupabaseRequestError } from "./supabaseErrors.js";
 
 let cachedClient = null;
 
@@ -26,13 +27,5 @@ export function getSupabaseAdminClient() {
 
 export function throwSupabaseError(error, fallbackMessage = "Question Bank request failed.") {
   if (!error) return;
-  const isMissingSchemaObject = error.code === "PGRST205" || /Could not find the table/i.test(error.message || "");
-  const requestError = new Error(
-    isMissingSchemaObject
-      ? "Question Bank Supabase migration has not been applied. Apply backend/supabase/migrations/202609020001_exam_hierarchy_question_bank.sql to the configured Supabase project."
-      : error.message || fallbackMessage
-  );
-  requestError.status = isMissingSchemaObject ? 503 : Number(error.status) || 500;
-  requestError.code = error.code || "SUPABASE_REQUEST_FAILED";
-  throw requestError;
+  throw createSupabaseRequestError(error, fallbackMessage);
 }

@@ -4,6 +4,8 @@ import { ProgressMeter, cn } from "./ui";
 import type { LiveStudent } from "../types";
 import { useAnimatedNumber } from "../hooks/useAnimatedNumber";
 import { scorePercentage } from "../lib/scoreMetrics";
+import { snapshotFor, sensorStatus } from "../lib/monitoringState";
+import { useMonitoringFreshness } from "../hooks/useMonitoringFreshness";
 
 interface StudentTileProps {
   student: LiveStudent;
@@ -15,8 +17,9 @@ interface StudentTileProps {
 
 export function StudentTile({ student, selected, rank, onSelect, onOpen }: StudentTileProps) {
   const percentage = scorePercentage(student);
+  const freshness = useMonitoringFreshness(student);
   const status = statusFromScore(percentage);
-  const previewSrc = student.previewUrl || student.previewBase64;
+  const previewSrc = snapshotFor(student, "camera");
   const tone = status === "SUSPICIOUS" ? "danger" : status === "WARNING" ? "warning" : "success";
   const displayScore = useAnimatedNumber(percentage);
   const online = student.onlineStatus === "ONLINE";
@@ -53,7 +56,7 @@ export function StudentTile({ student, selected, rank, onSelect, onOpen }: Stude
         )}
         <div className="absolute left-2 top-2 flex items-center gap-1.5">
           {rank ? <span className="rounded bg-slate-950/90 px-1.5 py-0.5 text-[10px] font-black text-slate-200 border border-slate-800">#{rank}</span> : null}
-          <StatusBadge status={status} />
+          <StatusBadge status={status} scoreOnly />
         </div>
         <button 
           className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded bg-slate-950/85 border border-slate-800 text-slate-300 transition hover:text-white focus:outline-none focus:ring-1 focus:ring-violet-400" 
@@ -66,12 +69,13 @@ export function StudentTile({ student, selected, rank, onSelect, onOpen }: Stude
         </button>
         {student.screenBase64 && (
           <div className="absolute bottom-2 left-2 flex items-center gap-1 rounded bg-slate-950/90 border border-slate-800 px-2 py-0.5 text-[9px] font-mono text-emerald-300">
-            <Monitor size={10} /> Screen live
+            <Monitor size={10} /> Screen snapshot
           </div>
         )}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
+        <p className="text-[10px] text-slate-400">{freshness}</p>
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
           <div className="min-w-0">
             <p className="truncate text-sm font-bold text-white" title={student.studentName || student.studentId}>{student.studentName || "Unknown student"}</p>
@@ -79,7 +83,7 @@ export function StudentTile({ student, selected, rank, onSelect, onOpen }: Stude
           </div>
           <span className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded border px-2 text-[10px] font-mono", online ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-300" : "border-slate-700 bg-slate-900 text-slate-500")}>
             {online ? <Wifi size={11} /> : <WifiOff size={11} />}
-            {online ? "Live" : "Offline"}
+            {online ? "Online" : "Offline"}
           </span>
         </div>
         
@@ -92,10 +96,10 @@ export function StudentTile({ student, selected, rank, onSelect, onOpen }: Stude
 
         <div className="grid grid-cols-2 gap-1.5 pt-1">
           <span className={cn("truncate rounded border px-2 py-0.5 text-[9px] font-mono", student.faceStatus === "Missing" ? "bg-red-950/30 border-red-500/30 text-red-400" : "bg-slate-900 border-slate-800 text-slate-400")}>
-            Face: {student.faceStatus || "Matching"}
+            Face: {sensorStatus(student.faceStatus)}
           </span>
           <span className={cn("truncate rounded border px-2 py-0.5 text-[9px] font-mono", student.audioStatus === "Speech detected" ? "bg-red-950/30 border-red-500/30 text-red-400" : "bg-slate-900 border-slate-800 text-slate-400")}>
-            Audio: {student.audioStatus || "Quiet"}
+            Audio: {sensorStatus(student.audioStatus)}
           </span>
         </div>
 

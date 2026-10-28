@@ -1,4 +1,5 @@
 import express from "express";
+import { studentExamPayload } from "../services/studentExamPayload.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { accessCodeRateLimiter } from "../middleware/rateLimiter.js";
 import { Exam } from "../models/Exam.js";
@@ -169,7 +170,7 @@ examsRouter.get("/assigned", requireAuth, requireRole("STUDENT"), async (req, re
       throw error;
     }
 
-    res.json({ exam: serializeExam(exam) });
+    res.json({ exam: studentExamPayload(serializeExam(exam), req.user.identifier) });
   } catch (error) {
     next(error);
   }
@@ -201,7 +202,7 @@ examsRouter.get("/access/:code", accessCodeRateLimiter, requireAuth, requireRole
       await exam.save();
     }
 
-    res.json({ exam: serializeExam(exam) });
+    res.json({ exam: studentExamPayload(serializeExam(exam), req.user.identifier) });
   } catch (error) {
     next(error);
   }

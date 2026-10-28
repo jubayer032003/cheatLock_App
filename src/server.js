@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import { bulkJsonParser, bulkSubmissionPath } from '../backend/src/routes/selfExamBulk.js';
 import helmet from "helmet";
 import http from "node:http";
 import mongoose from "mongoose";
@@ -72,6 +73,7 @@ app.options(
 );
 app.use(helmet());
 app.use(rateLimiter);
+app.use(bulkSubmissionPath, bulkJsonParser);
 app.use(express.json({ limit: "3mb" }));
 
 app.get("/health", (_req, res) => {
@@ -110,10 +112,23 @@ const io = new Server(server, {
 app.set("io", io);
 configureProctoringSocket(io);
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   const status = err.status || 500;
+  const code = err.code || (status === 500 ? "SERVER_ERROR" : "REQUEST_FAILED");
+  const isOperationalError = Boolean(err.status || err.code);
+  const message = config.nodeEnv === "production" && status >= 500 && !isOperationalError
+    ? "Server error"
+    : err.message || "Server error";
+  logger.error("Request failed.", {
+    statusCode: status,
+    method: req.method,
+    path: req.path,
+    code,
+    message: err.message,
+  });
   res.status(status).json({
-    message: err.message || "Server error",
+    code,
+    message,
   });
 });
 

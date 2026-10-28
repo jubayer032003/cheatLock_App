@@ -65,6 +65,10 @@ jobs:
         working-directory: backend
         run: npm ci
 
+      - name: Install Socket.IO integration test client
+        working-directory: web-dashboard
+        run: npm ci
+
       - name: Run backend test suite
         run: node --test tests/*.test.js
 
@@ -85,7 +89,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: web-dashboard/package-lock.json
 
@@ -96,6 +100,10 @@ jobs:
       - name: Build production dashboard
         working-directory: web-dashboard
         run: npm run build
+
+      - name: Run dashboard state regression tests
+        working-directory: web-dashboard
+        run: npm test
 
   desktop-validation:
     name: Desktop Frontend Validation

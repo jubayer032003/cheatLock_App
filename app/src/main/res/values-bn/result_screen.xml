@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="result_detected_signals">পরীক্ষার সময় শনাক্ত</string>
+    <string name="result_risk_score">ঝুঁকির স্কোর</string>
+    <string name="result_risk_hint">বেশি স্কোর বেশি সন্দেহজনক কার্যকলাপ নির্দেশ করে। শুধু এসব সংকেত অসদুপায় নিশ্চিত করে না।</string>
+    <string name="result_student_id">শিক্ষার্থীর আইডি</string>
+    <string name="result_out_of_100">/ 100</string>
+    <string name="result_percentage">%1$s%%</string>
+    <string name="result_grade_description">অফিশিয়াল ফলাফল: 100 এর মধ্যে %1$s</string>
+    <string name="result_risk_description">ঝুঁকির স্কোর: 100 এর মধ্যে %1$d। %2$s।</string>
+</resources>

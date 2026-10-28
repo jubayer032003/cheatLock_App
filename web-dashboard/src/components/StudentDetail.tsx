@@ -4,6 +4,8 @@ import { Card, EmptyState, cn } from "./ui";
 import type { LiveStudent, IntegrityDecision } from "../types";
 import { useState } from "react";
 import { scorePercentage } from "../lib/scoreMetrics";
+import { snapshotFor, sensorStatus } from "../lib/monitoringState";
+import { useMonitoringFreshness } from "../hooks/useMonitoringFreshness";
 
 interface StudentDetailProps {
   student: LiveStudent | null;
@@ -39,6 +41,7 @@ export function StudentDetail({
   commandFeedback = "",
 }: StudentDetailProps) {
   const [confirmCommand, setConfirmCommand] = useState<{ command: string; label: string } | null>(null);
+  const freshness = useMonitoringFreshness(student);
 
   if (!student) {
     return (
@@ -50,8 +53,8 @@ export function StudentDetail({
 
   const percentage = scorePercentage(student);
   const status = statusFromScore(percentage);
-  const cameraSrc = student.previewUrl || student.previewBase64;
-  const screenSrc = student.screenBase64;
+  const cameraSrc = snapshotFor(student, "camera");
+  const screenSrc = snapshotFor(student, "screen");
   const isSending = (command: string) => pendingCommandKey === `${student.studentId}:${command}`;
   const sendStudentCommand = (command: string, message?: string) => {
     onSendCommand(student.studentId, command, message);
@@ -66,7 +69,7 @@ export function StudentDetail({
           <h2 className="mt-1 truncate text-lg font-black text-white">{student.studentName}</h2>
           <p className="text-xs text-slate-500 font-mono">{student.rollId || student.studentId}</p>
         </div>
-        <StatusBadge status={status} />
+        <StatusBadge status={status} scoreOnly />
       </div>
 
       <div className="space-y-2">
@@ -76,7 +79,7 @@ export function StudentDetail({
             onClick={() => setDetailTab("camera")}
             className={cn("flex-1 rounded px-2 py-1.5 text-center text-xs font-bold", detailTab === "camera" ? "bg-cyan-500 text-slate-950" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200")}
           >
-            Webcam Feed
+            Camera Snapshot
           </button>
           <button 
             type="button" 
@@ -106,15 +109,18 @@ export function StudentDetail({
 
       <div className="space-y-2.5">
         <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-500">Monitoring status</h3>
+        <p className="text-xs text-slate-400">{freshness}</p>
         <div className="rounded-md border border-slate-800 bg-slate-900 p-3 text-xs font-mono text-slate-300">
           Suspicion score: <span className="font-bold text-white">{percentage}/100</span>
           {student.scoreMetrics?.updatedAt ? <span className="ml-2 text-slate-500">Updated {new Date(student.scoreMetrics.updatedAt).toLocaleTimeString()}</span> : null}
         </div>
         <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-          <DetailBadge label="Face tracking" value={student.faceStatus || "Matching"} highlight={student.faceStatus === "Missing"} />
-          <DetailBadge label="Audio activity" value={student.audioStatus || "Quiet"} highlight={student.audioStatus === "Speech detected"} />
-          <DetailBadge label="Window focus" value={student.focusStatus || "Focused"} highlight={student.focusStatus === "Blurred"} />
-          <DetailBadge label="Monitor count" value={student.multiMonitorStatus || "Normal"} highlight={student.multiMonitorStatus === "Multi-monitor alert"} />
+          <DetailBadge label="Face tracking" value={sensorStatus(student.faceStatus)} highlight={student.faceStatus === "Missing"} />
+          <DetailBadge label="Audio activity" value={sensorStatus(student.audioStatus)} highlight={student.audioStatus === "Speech detected"} />
+          <DetailBadge label="Window focus" value={sensorStatus(student.focusStatus)} highlight={student.focusStatus === "Blurred"} />
+          <DetailBadge label="Monitor count" value={sensorStatus(student.multiMonitorStatus)} highlight={student.multiMonitorStatus === "Multi-monitor alert"} />
+          <DetailBadge label="Object detector" value="Unverified" highlight={false} />
+          <DetailBadge label="Attempt start" value={student.attemptStartedAt ? new Date(student.attemptStartedAt).toLocaleTimeString() : "Unknown"} highlight={false} />
         </div>
       </div>
 

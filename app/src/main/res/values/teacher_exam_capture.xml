@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="screen_capture_required">Screen sharing is required for this exam. Allow screen sharing and try again.</string>
+    <string name="screen_capture_start_failed">Screen monitoring could not start. Check screen-sharing permission and try again.</string>
+    <string name="monitoring_permissions_required">Camera and microphone access are required for this exam. Enable both permissions and try again.</string>
+</resources>

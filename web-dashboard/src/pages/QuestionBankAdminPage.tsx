@@ -12,7 +12,10 @@ import {
   Search,
   ToggleLeft,
   ToggleRight,
+  Upload,
 } from "lucide-react";
+import { ChapterQuestionImporterModal } from "../components/ChapterQuestionImporterModal";
+import { ExamTreeAdminPanel } from "../components/ExamTreeAdminPanel";
 import {
   createQuestionBankChapter,
   createQuestionBankClass,
@@ -129,6 +132,7 @@ export function QuestionBankAdminPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [showImporter, setShowImporter] = useState(false);
 
   const activeClasses = useMemo(() => classes.filter((item) => item.isActive), [classes]);
   const currentSubjects = useMemo(
@@ -377,13 +381,18 @@ export function QuestionBankAdminPage() {
         title="Central Question Bank"
         description="Manage curriculum hierarchy and MCQ content used by Self Exam and teacher exam building."
         actions={
-          <div className="inline-flex rounded-md border border-slate-200 bg-white p-1 dark:border-white/10 dark:bg-command-950/70">
-            <button className={cn("rounded px-3 py-1.5 text-sm font-semibold", activeTab === "questions" && "bg-cyan-500 text-slate-950")} type="button" onClick={() => setActiveTab("questions")}>
-              Questions
+          <div className="flex flex-wrap gap-2">
+            <button className="secondary-button" type="button" onClick={() => setShowImporter(true)}>
+              <Upload size={16} /> Import Questions
             </button>
-            <button className={cn("rounded px-3 py-1.5 text-sm font-semibold", activeTab === "structure" && "bg-cyan-500 text-slate-950")} type="button" onClick={() => setActiveTab("structure")}>
-              Structure
-            </button>
+            <div className="inline-flex rounded-md border border-slate-200 bg-white p-1 dark:border-white/10 dark:bg-command-950/70">
+              <button className={cn("rounded px-3 py-1.5 text-sm font-semibold", activeTab === "questions" && "bg-cyan-500 text-slate-950")} type="button" onClick={() => setActiveTab("questions")}>
+                Questions
+              </button>
+              <button className={cn("rounded px-3 py-1.5 text-sm font-semibold", activeTab === "structure" && "bg-cyan-500 text-slate-950")} type="button" onClick={() => setActiveTab("structure")}>
+                Structure
+              </button>
+            </div>
           </div>
         }
       />
@@ -401,28 +410,7 @@ export function QuestionBankAdminPage() {
           <SkeletonBlock className="h-72" />
         </div>
       ) : activeTab === "structure" ? (
-        <StructurePanel
-          classes={classes}
-          subjects={currentSubjects}
-          chapters={currentChapters}
-          selectedClassId={selectedClassId}
-          selectedSubjectId={selectedSubjectId}
-          classForm={classForm}
-          subjectForm={subjectForm}
-          chapterForm={chapterForm}
-          saving={saving}
-          setSelectedClassId={setSelectedClassId}
-          setSelectedSubjectId={setSelectedSubjectId}
-          setClassForm={setClassForm}
-          setSubjectForm={setSubjectForm}
-          setChapterForm={setChapterForm}
-          onSaveClass={handleSaveClass}
-          onSaveSubject={handleSaveSubject}
-          onSaveChapter={handleSaveChapter}
-          onSetClassStatus={(item) => runSave(async () => { await setQuestionBankClassStatus(item.id, !item.isActive); await loadClasses(); setMessage(item.isActive ? "Class deactivated." : "Class activated."); })}
-          onSetSubjectStatus={(item) => runSave(async () => { await setQuestionBankSubjectStatus(item.id, !item.isActive); await loadSubjects(item.classId); setMessage(item.isActive ? "Subject deactivated." : "Subject activated."); })}
-          onSetChapterStatus={(item) => runSave(async () => { await setQuestionBankChapterStatus(item.id, !item.isActive); await loadChapters(item.subjectId); setMessage(item.isActive ? "Chapter deactivated." : "Chapter activated."); })}
-        />
+        <ExamTreeAdminPanel />
       ) : (
         <section className="grid gap-6 xl:grid-cols-[420px_1fr]">
           <QuestionFormPanel
@@ -463,6 +451,21 @@ export function QuestionBankAdminPage() {
       <Dialog open={Boolean(previewQuestion)} onClose={() => setPreviewQuestion(null)} title="Question preview">
         {previewQuestion && <QuestionPreview question={previewQuestion} />}
       </Dialog>
+
+      <ChapterQuestionImporterModal
+        open={showImporter}
+        classes={classes}
+        subjects={subjects}
+        chapters={chapters}
+        initialClassId={questionForm.classId || selectedClassId}
+        initialSubjectId={questionForm.subjectId || selectedSubjectId}
+        initialChapterId={questionForm.chapterId}
+        onClose={() => setShowImporter(false)}
+        onSuccess={(count) => {
+          setMessage(`Successfully imported ${count} questions to the chapter.`);
+          loadQuestions();
+        }}
+      />
     </div>
   );
 }

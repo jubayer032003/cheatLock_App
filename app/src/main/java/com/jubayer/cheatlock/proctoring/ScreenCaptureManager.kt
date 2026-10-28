@@ -17,14 +17,14 @@ import java.io.ByteArrayOutputStream
 class ScreenCaptureManager(
     private val context: Context,
     private val mediaProjection: MediaProjection,
-    private val onSnapshot: (String) -> Unit
+    private val onSnapshot: (String, Long) -> Unit
 ) {
     private val handlerThread = HandlerThread("CheatLockScreenCapture")
     private var handler: Handler? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var lastSentAt = 0L
-    private var stopped = false
+    @Volatile private var stopped = false
     private var isProcessingFrame = false
 
     private val projectionCallback = object : MediaProjection.Callback() {
@@ -33,9 +33,8 @@ class ScreenCaptureManager(
         }
     }
 
-    fun start() {
-        if (stopped) return
-
+    @Synchronized fun start() {
+        check(!stopped) { "Screen projection is already stopped." }
         handlerThread.start()
         val captureHandler = Handler(handlerThread.looper)
         handler = captureHandler
@@ -54,40 +53,21 @@ class ScreenCaptureManager(
         imageReader = reader
         mediaProjection.registerCallback(projectionCallback, captureHandler)
         
-        virtualDisplay = try {
-            mediaProjection.createVirtualDisplay(
-                "CheatLockScreenCapture",
-                width,
-                height,
-                density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface,
-                null,
-                captureHandler
-            )
-        } catch (e: Exception) {
-            Log.w("ScreenCaptureManager", "Primary VirtualDisplay creation failed, trying fallback", e)
-            mediaProjection.createVirtualDisplay(
-                "CheatLockScreenCapture",
-                width,
-                height,
-                density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
-                reader.surface,
-                null,
-                captureHandler
-            )
-        }
-
+        // A MediaProjection consent token owns one virtual display; do not retry it.
+        virtualDisplay = mediaProjection.createVirtualDisplay(
+            "CheatLockScreenCapture", width, height, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.surface, null, captureHandler
+        )
         reader.setOnImageAvailableListener({ availableReader ->
+            if (stopped) return@setOnImageAvailableListener
             val now = System.currentTimeMillis()
             if (now - lastSentAt < SNAPSHOT_INTERVAL_MS) {
                 // Important: Close any images we aren't going to use to prevent buffer exhaustion.
-                availableReader.acquireLatestImage()?.close()
+                runCatching { availableReader.acquireLatestImage()?.close() }
                 return@setOnImageAvailableListener
             }
             if (isProcessingFrame) {
-                availableReader.acquireLatestImage()?.close()
+                runCatching { availableReader.acquireLatestImage()?.close() }
                 return@setOnImageAvailableListener
             }
 
@@ -98,13 +78,13 @@ class ScreenCaptureManager(
                     val snapshot = image.toJpegDataUrl()
                     if (snapshot.isNotBlank()) {
                         lastSentAt = now
-                        onSnapshot(snapshot)
+                        onSnapshot(snapshot, now)
                     }
                 }.onFailure { e ->
                     Log.e("ScreenCaptureManager", "Failed to process snapshot", e)
                 }
             } finally {
-                image.close()
+                runCatching { image.close() }
                 isProcessingFrame = false
             }
         }, captureHandler)
@@ -114,7 +94,7 @@ class ScreenCaptureManager(
         release(stopProjection = true)
     }
 
-    private fun release(stopProjection: Boolean) {
+    @Synchronized private fun release(stopProjection: Boolean) {
         if (stopped) return
         stopped = true
 
@@ -141,12 +121,8 @@ class ScreenCaptureManager(
         val rowPadding = rowStride - pixelStride * width
         val paddedWidth = width + rowPadding / pixelStride
 
-        val paddedBitmap = runCatching { 
-            Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.RGB_565) 
-        }.getOrElse { 
-            // Fallback to ARGB_8888 if RGB_565 fails on some weird device
-            Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.ARGB_8888) 
-        }
+        // ImageReader emits four-byte RGBA pixels; RGB_565 would reinterpret the buffer incorrectly.
+        val paddedBitmap = Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.ARGB_8888)
         var croppedBitmap: Bitmap? = null
         var scaledBitmap: Bitmap? = null
         try {

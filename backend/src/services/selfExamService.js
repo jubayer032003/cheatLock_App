@@ -1,12 +1,14 @@
 import { getSupabaseAdminClient, throwSupabaseError } from "./supabaseClient.js";
+import { bulkSelfExamEnabled, bulkError } from './selfExamBulkService.js';
+import { isMissingExamHierarchyError } from "./supabaseErrors.js";
 import { collectNodeAndDescendantIds, isUuid, serializeQuestion } from "./questionBankService.js";
 
 const DIFFICULTY_MODES = new Set(["easy", "medium", "hard", "mixed"]);
 const FINAL_STATUSES = new Set(["submitted", "expired", "cancelled"]);
 
 export function normalizeSelfExamConfig(body = {}) {
-  const durationMinutes = Number(body.durationMinutes || body.duration_minutes || 10);
-  const questionCount = Number(body.questionCount || body.question_count || 10);
+  const durationMinutes = Number(body.durationMinutes ?? body.duration_minutes ?? 10);
+  const questionCount = Number(body.questionCount ?? body.question_count ?? 10);
   const classId = body.classId || body.class_id;
   const subjectId = body.subjectId || body.subject_id;
   const chapterId = body.chapterId || body.chapter_id;
@@ -86,7 +88,9 @@ export async function createSelfExamSession(studentId, body) {
       };
   const { data, error } = await getSupabaseAdminClient()
     .from("question_bank_self_exam_sessions")
-    .insert([{ ...insertPayload, student_id: studentId, status: "created" }])
+    .insert([{ ...insertPayload, student_id: actorIdentifier(studentId), status: "created",
+      ...(bulkSelfExamEnabled() ? { bulk_owner_account_id: actorAccountId(studentId),
+        ...(body.checkpointVersion === 1 && process.env.SELF_EXAM_CHECKPOINT_V1_ENABLED === "true" ? {checkpoint_enabled:true} : {}) } : {}) }])
     .select("*")
     .single();
   throwSupabaseError(error);
@@ -97,13 +101,13 @@ export async function getActiveSelfExamSession(studentId) {
   const { data, error } = await getSupabaseAdminClient()
     .from("question_bank_self_exam_sessions")
     .select("*")
-    .eq("student_id", studentId)
+    .eq("student_id", actorIdentifier(studentId))
     .eq("status", "in_progress")
     .order("started_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   throwSupabaseError(error);
-  return data ? serializeSession(data) : null;
+  return data && (!data.bulk_owner_account_id || data.bulk_owner_account_id === actorAccountId(studentId)) ? serializeSession(data) : null;
 }
 
 export async function startSelfExamSession(studentId, sessionId) {
@@ -137,7 +141,7 @@ export async function startSelfExamSession(studentId, sessionId) {
       updated_at: now.toISOString(),
     })
     .eq("id", session.id)
-    .eq("student_id", studentId);
+    .eq("student_id", actorIdentifier(studentId));
   throwSupabaseError(updateError);
   return getSelfExamSession(studentId, sessionId);
 }
@@ -146,6 +150,7 @@ export async function getSelfExamSession(studentId, sessionId, { includeResult =
   const session = await findOwnedSession(studentId, sessionId);
   await expireIfNeeded(session);
   const refreshed = await findOwnedSession(studentId, sessionId);
+  if (includeResult && refreshed.bulk_final_result) return refreshed.bulk_final_result;
   const [questions, answers] = await Promise.all([
     fetchSessionQuestions(refreshed.id, { includeAnswers: includeResult && refreshed.status === "submitted" }),
     fetchSessionAnswers(refreshed.id, { includeResult: includeResult && refreshed.status === "submitted" }),
@@ -160,6 +165,7 @@ export async function getSelfExamSession(studentId, sessionId, { includeResult =
 
 export async function saveSelfExamAnswer(studentId, sessionId, body = {}) {
   const session = await findOwnedSession(studentId, sessionId);
+  if (session.checkpoint_enabled === true && session.status !== "submitted") throw Object.assign(new Error("Use revision-safe bulk operations for this exam."), {statusCode:409,code:"CHECKPOINT_REQUIRED"});
   await assertAcceptingAnswers(session);
   const questionId = requiredUuid(body.questionId || body.question_id, "Question is required.");
   const selectedOptionId = optionalUuid(body.selectedOptionId || body.selected_option_id, "Invalid option.");
@@ -186,6 +192,11 @@ export async function saveSelfExamAnswer(studentId, sessionId, body = {}) {
 
 export async function submitSelfExam(studentId, sessionId) {
   const session = await findOwnedSession(studentId, sessionId);
+  if (session.checkpoint_enabled === true && session.status !== "submitted") {
+    const {data,error} = await getSupabaseAdminClient().rpc('self_exam_finalize_expired_v1', {p_owner_account_id:actorAccountId(studentId),p_session_id:session.id});
+    throwSupabaseError(error);
+    return data.canonical;
+  }
   if (session.status === "submitted") return getSelfExamResult(studentId, sessionId);
   await assertAcceptingAnswers(session, { allowExpiredSubmit: true });
 
@@ -225,13 +236,14 @@ export async function submitSelfExam(studentId, sessionId) {
     .from("question_bank_self_exam_sessions")
     .update({ status: "submitted", submitted_at: now, score, total_marks: totalMarks, updated_at: now })
     .eq("id", session.id)
-    .eq("student_id", studentId);
+    .eq("student_id", actorIdentifier(studentId));
   throwSupabaseError(error);
   return getSelfExamResult(studentId, sessionId);
 }
 
 export async function getSelfExamResult(studentId, sessionId) {
   const payload = await getSelfExamSession(studentId, sessionId, { includeResult: true });
+  if (payload.result) return payload;
   if (payload.session.status !== "submitted") {
     const error = new Error("Result is available only after submission.");
     error.status = 409;
@@ -239,7 +251,7 @@ export async function getSelfExamResult(studentId, sessionId) {
     throw error;
   }
 
-  const answered = payload.answers.length;
+  const answered = payload.answers.filter((answer) => answer.selectedOptionId != null || answer.answerText.trim().length > 0).length;
   const correct = payload.answers.filter((answer) => answer.isCorrect).length;
   return {
     ...payload,
@@ -410,10 +422,19 @@ async function findOwnedSession(studentId, sessionId) {
     .from("question_bank_self_exam_sessions")
     .select("*")
     .eq("id", sessionId)
-    .eq("student_id", studentId)
+    .eq("student_id", actorIdentifier(studentId))
     .single();
   throwSupabaseError(error);
+  if (!data || (data.bulk_owner_account_id && data.bulk_owner_account_id !== actorAccountId(studentId))) {
+    throw bulkError('BULK_SESSION_UNAVAILABLE', 'Self exam session unavailable.', 404);
+  }
   return data;
+}
+
+function actorIdentifier(actor) { return typeof actor === 'string' ? actor : actor?.identifier; }
+function actorAccountId(actor) {
+  if (!/^[a-f0-9]{24}$/.test(actor?.sub || '')) throw bulkError('BULK_UNAUTHORIZED', 'Sign in again to access this exam.', 401);
+  return actor.sub;
 }
 
 async function assertQuestionInSession(sessionId, questionId) {
@@ -464,6 +485,8 @@ async function expireIfNeeded(session) {
 export function serializeSession(session) {
   return {
     id: session.id,
+    bulkSubmissionVersion: session.bulk_owner_account_id ? 1 : null,
+    checkpointVersion: session.checkpoint_enabled ? 1 : null,
     studentId: session.student_id,
     nodeId: session.node_id || session.chapter_id || session.subject_id || session.class_id,
     classId: session.class_id || session.node_id,
@@ -530,12 +553,7 @@ function normalizeDifficultyMode(value) {
   return normalized;
 }
 
-function isMissingExamHierarchyError(error) {
-  const message = String(error?.message || "");
-  return error?.code === "PGRST205"
-    || error?.code === "PGRST204"
-    || /exam_categories|exam_nodes|node_id|Could not find|migration has not been applied/i.test(message);
-}
+
 
 function throwRequest(message) {
   const error = new Error(message);

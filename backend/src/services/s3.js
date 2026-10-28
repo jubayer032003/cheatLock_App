@@ -38,7 +38,7 @@ export function isS3Configured() {
   return getS3Config().enabled;
 }
 
-export async function uploadFrame(key, base64Data, contentType = "image/jpeg") {
+export async function uploadFrame(key, base64Data, contentType = "image/jpeg", clientOverride = null) {
   const s3 = requireS3();
   if (!key || !base64Data) {
     throw new Error("S3 upload requires an object key and payload.");
@@ -51,11 +51,10 @@ export async function uploadFrame(key, base64Data, contentType = "image/jpeg") {
       Bucket: s3.bucket,
       Key: key,
       Body: buffer,
-      ContentEncoding: "base64",
       ContentType: contentType,
     });
 
-    await getClient().send(command);
+    await (clientOverride || getClient()).send(command);
     return key;
   } catch (error) {
     logger.error(`Failed to upload telemetry object to S3: ${error.name || "UploadError"}`);

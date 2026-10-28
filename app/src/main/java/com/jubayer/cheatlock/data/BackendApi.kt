@@ -9,6 +9,8 @@ import com.jubayer.cheatlock.model.SaveSelfExamAnswerRequest
 import com.jubayer.cheatlock.model.SelfExamAnswerResponse
 import com.jubayer.cheatlock.model.SelfExamChaptersResponse
 import com.jubayer.cheatlock.model.SelfExamClassesResponse
+import com.jubayer.cheatlock.model.SelfExamCategoriesResponse
+import com.jubayer.cheatlock.model.SelfExamNodesResponse
 import com.jubayer.cheatlock.model.SelfExamPayloadResponse
 import com.jubayer.cheatlock.model.SelfExamResultResponse
 import com.jubayer.cheatlock.model.SelfExamSessionResponse
@@ -30,6 +32,28 @@ data class HealthResponse(
 )
 
 interface BackendApi {
+    @POST("self-exam/v1/sessions/{sessionId}/checkpoint")
+    suspend fun saveSelfExamCheckpoint(@Header("Authorization") authorization: String,
+        @retrofit2.http.Path("sessionId") sessionId: String, @Body body: okhttp3.RequestBody): com.jubayer.cheatlock.selfexam.CheckpointState
+    @GET("self-exam/v1/sessions/{sessionId}/checkpoint")
+    suspend fun getSelfExamCheckpoint(@Header("Authorization") authorization: String,
+        @retrofit2.http.Path("sessionId") sessionId: String): com.jubayer.cheatlock.selfexam.CheckpointState
+
+    @POST("self-exam/v1/sessions/{sessionId}/submit-bulk")
+    suspend fun submitBulkSelfExam(
+        @Header("Authorization") token: String,
+        @retrofit2.http.Path("sessionId") sessionId: String,
+        @Header("x-submission-correlation-id") correlationId: String,
+        @Body body: okhttp3.RequestBody
+    ): okhttp3.ResponseBody
+
+    @GET("self-exam/v1/sessions/{sessionId}/submissions/{submissionId}")
+    suspend fun getBulkSelfExamStatus(
+        @Header("Authorization") token: String,
+        @retrofit2.http.Path("sessionId") sessionId: String,
+        @retrofit2.http.Path("submissionId") submissionId: String,
+        @Header("x-submission-correlation-id") correlationId: String
+    ): com.jubayer.cheatlock.model.BulkSelfExamStatusResponse
     @GET("health")
     suspend fun health(): HealthResponse
 
@@ -39,9 +63,24 @@ interface BackendApi {
     @POST("auth/login")
     suspend fun login(@Body request: AuthRequest): LoginResponse
 
+    @POST("auth/refresh")
+    suspend fun refreshSession(@Body request: RefreshSessionRequest): LoginResponse
+
+    @POST("auth/session")
+    suspend fun rememberSession(@Header("Authorization") authorization: String): RememberedSessionResponse
+
+    @POST("auth/logout")
+    fun revokeSession(@Body request: RefreshSessionRequest): retrofit2.Call<Void>
+
     @GET("auth/me")
     suspend fun getMe(
         @Header("Authorization") authorization: String
+    ): UserResponse
+
+    @PATCH("auth/me")
+    suspend fun updateMe(
+        @Header("Authorization") authorization: String,
+        @Body request: UpdateProfileRequest
     ): UserResponse
 
     @retrofit2.http.HTTP(method = "DELETE", path = "auth/account", hasBody = true)
@@ -262,6 +301,18 @@ interface BackendApi {
         @Header("Authorization") authorization: String
     ): SelfExamClassesResponse
 
+    @GET("self-exam/categories")
+    suspend fun getSelfExamCategories(
+        @Header("Authorization") authorization: String
+    ): SelfExamCategoriesResponse
+
+    @GET("self-exam/nodes")
+    suspend fun getSelfExamNodes(
+        @Header("Authorization") authorization: String,
+        @Query("categoryId") categoryId: String? = null,
+        @Query("parentId") parentId: String? = null
+    ): SelfExamNodesResponse
+
     @GET("self-exam/classes/{classId}/subjects")
     suspend fun getSelfExamSubjects(
         @Header("Authorization") authorization: String,
@@ -321,10 +372,19 @@ data class AuthRequest(
     val name: String? = null,
     val identifier: String,
     val password: String,
-    val role: UserRole
+    val role: UserRole,
+    val rememberDevice: Boolean = true
 )
 
+data class RefreshSessionRequest(val refreshToken: String)
+data class RememberedSessionResponse(val refreshToken: String)
+
 data class DeleteAccountRequest(val password: String)
+
+data class UpdateProfileRequest(
+    val name: String,
+    val identifier: String
+)
 
 data class AuthUserDto(
     val name: String,
@@ -334,12 +394,14 @@ data class AuthUserDto(
 
 data class SignupResponse(
     val token: String,
-    val user: AuthUserDto
+    val user: AuthUserDto,
+    val refreshToken: String? = null
 )
 
 data class LoginResponse(
     val token: String,
-    val user: AuthUserDto
+    val user: AuthUserDto,
+    val refreshToken: String? = null
 )
 
 data class FaceProfileRequest(
@@ -490,7 +552,9 @@ data class ProctoringEventRequest(
     val processingCompletedAt: String? = null,
     val latestAlert: String? = null,
     val previewUrl: String? = null,
-    val previewBase64: String? = null
+    val previewBase64: String? = null,
+    val base64: String? = null,
+    val captureSource: String? = null
 )
 
 data class ScoreMetrics(
@@ -513,7 +577,9 @@ data class ProctoringEventResponse(
 data class LockSessionRequest(
     val reason: String,
     val examId: String? = null,
-    val suspicionScore: Int? = null
+    val suspicionScore: Int? = null,
+    val attemptStartedAt: Long? = null,
+    val deviceId: String? = null
 )
 
 data class StudentNotificationsResponse(

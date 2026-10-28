@@ -125,11 +125,11 @@ test("self exam routes require authenticated student role before service access"
     assert.match(routeLine, /requireAuth/);
     assert.match(routeLine, /requireRole\("STUDENT"\)/);
   }
-  assert.match(source, /req\.user\.identifier/);
+  assert.match(source, /createSelfExamSession\(req\.user, req\.body\)/);
   assert.doesNotMatch(source, /req\.body\.studentId|req\.query\.studentId/);
   assert.match(rootRouteSource, /requireAuth/);
   assert.match(rootRouteSource, /requireRole\("STUDENT"\)/);
-  assert.match(rootRouteSource, /req\.user\.identifier/);
+  assert.match(rootRouteSource, /createSelfExamSession\(req\.user, req\.body\)/);
   assert.doesNotMatch(rootRouteSource, /req\.body\.studentId|req\.query\.studentId/);
   assert.match(serverSource, /app\.use\("\/self-exam", selfExamRouter\)/);
   assert.match(serverSource, /app\.use\("\/self-exams", selfExamRouter\)/);

@@ -1,3 +1,4 @@
+import { androidUnsupportedQuestions } from "../../lib/androidCompatibility";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
@@ -149,6 +150,11 @@ export function QuestionBuilder({
         </div>
       </div>
 
+      {androidUnsupportedQuestions(builderQuestions).length > 0 && (
+        <p role="status" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:bg-amber-950 dark:text-amber-100">
+          Android compatibility: questions {androidUnsupportedQuestions(builderQuestions).join(", ")} use formats the student Android app cannot open. Android supports MCQ and CQ. Change these formats before assigning this exam to Android students.
+        </p>
+      )}
       {previewMode ? (
         <StudentPreview questions={builderQuestions} previewWidth={previewWidth} setPreviewWidth={setPreviewWidth} />
       ) : (

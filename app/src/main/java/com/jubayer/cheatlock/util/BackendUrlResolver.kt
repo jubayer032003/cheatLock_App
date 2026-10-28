@@ -24,7 +24,18 @@ object BackendUrlResolver {
     /** Ensure the URL ends with a trailing slash. */
     fun normalizeForStorage(url: String): String {
         val trimmed = url.trim()
-        return if (trimmed.endsWith("/")) trimmed else "$trimmed/"
+        if (trimmed.isBlank()) return DEPLOYED_URL
+
+        val withScheme = if (
+            trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            trimmed
+        } else {
+            "https://$trimmed"
+        }
+
+        return if (withScheme.endsWith("/")) withScheme else "$withScheme/"
     }
 
     /** UI hint – just reports the final backend URL. */
@@ -91,5 +102,4 @@ object BackendUrlResolver {
         return list.distinct()
     }
 }
-
 

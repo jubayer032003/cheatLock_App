@@ -47,6 +47,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -80,12 +81,12 @@ object CheatLockSpacing {
 }
 
 val CheatLockBrandGradient = Brush.linearGradient(
-    colors = listOf(CheatLockPurpleDeep, CheatLockPurpleVibrant, CheatLockPurpleSoft)
+    colors = listOf(Color(0xFF076CFF), Color(0xFF087CFF), Color(0xFF00E5FF))
 )
 
 val CheatLockHeroGradient = Brush.linearGradient(
     colors = listOf(
-        CheatLockPurpleDeep.copy(alpha = 0.85f),
+        Color(0xFF0B192C),
         CheatLockNavyRich,
         CheatLockNavyDeep
     )
@@ -96,9 +97,12 @@ fun PremiumScreen(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
     Surface(modifier = modifier, color = MaterialTheme.colorScheme.background) {
         Box(modifier = Modifier.fillMaxSize()) {
-            AmbientBackground()
+            if (!isLight) {
+                AmbientBackground()
+            }
             content()
         }
     }
@@ -127,35 +131,38 @@ fun PremiumCard(
     elevated: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val elevation = if (elevated) 6.dp else 2.dp
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val elevation = if (isLight) {
+        if (elevated) 2.dp else 0.dp
+    } else {
+        if (elevated) 6.dp else 2.dp
+    }
+
+    val containerColor = if (isLight) CheatLockLightSurface else CheatLockDarkSurfaceGlass.copy(alpha = 0.72f)
+    val borderColor = if (isLight) CheatLockLightBorder else CheatLockGlassBorder
+
     Card(
         modifier = modifier
             .fillMaxWidth()
             .animateContentSize(),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
-            containerColor = CheatLockDarkSurfaceGlass.copy(alpha = 0.72f)
+            containerColor = containerColor
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = elevation)
     ) {
         Box(
             modifier = Modifier
                 .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            CheatLockGlassHighlight,
-                            Color.Transparent
-                        )
-                    )
+                    if (isLight) {
+                        Brush.verticalGradient(listOf(Color.White, Color.White))
+                    } else {
+                        Brush.verticalGradient(listOf(CheatLockGlassHighlight, Color.Transparent))
+                    }
                 )
                 .border(
                     width = 1.dp,
-                    brush = Brush.verticalGradient(
-                        listOf(
-                            CheatLockGlassBorder,
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                        )
-                    ),
+                    color = borderColor,
                     shape = MaterialTheme.shapes.large
                 )
                 .padding(CheatLockSpacing.md)
@@ -357,35 +364,43 @@ fun QuickStatCard(
     modifier: Modifier = Modifier,
     accent: Color = CheatLockPurpleVibrant
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val cardBg = if (isLight) CheatLockLightSurface else CheatLockNavySurface.copy(alpha = 0.9f)
+    val cardBorder = if (isLight) CheatLockLightBorder else CheatLockGlassBorder
+    val textColor = if (isLight) CheatLockLightTextPrimary else CheatLockWhite
+    val finalAccent = if (isLight && accent == CheatLockPurpleVibrant) CheatLockLightPrimary else accent
+
     Card(
         modifier = modifier,
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
-            containerColor = CheatLockNavySurface.copy(alpha = 0.9f)
+            containerColor = cardBg
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isLight) 1.dp else 2.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = accent,
-                modifier = Modifier.size(22.dp)
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = CheatLockWhite
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Box(modifier = Modifier.border(1.dp, cardBorder, MaterialTheme.shapes.medium)) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = finalAccent,
+                    modifier = Modifier.size(22.dp)
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = textColor
+                )
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -441,7 +456,18 @@ fun GradientPrimaryButton(
     loading: Boolean = false,
     leadingIcon: ImageVector? = null
 ) {
-    val alpha = if (enabled) 1f else 0.45f
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val buttonGradient = if (isLight) {
+        Brush.linearGradient(listOf(CheatLockLightPrimary, CheatLockLightPrimaryDark))
+    } else {
+        CheatLockBrandGradient
+    }
+    val borderColor = if (isLight) {
+        CheatLockLightPrimary.copy(alpha = 0.3f)
+    } else {
+        CheatLockPurpleSoft.copy(alpha = 0.4f)
+    }
+
     Button(
         onClick = onClick,
         enabled = enabled && !loading,
@@ -456,12 +482,10 @@ fun GradientPrimaryButton(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(MaterialTheme.shapes.medium)
-                .background(
-                    CheatLockBrandGradient
-                )
+                .background(buttonGradient)
                 .border(
-                    width = 1.dp, 
-                    color = CheatLockPurpleSoft.copy(alpha = 0.4f), 
+                    width = 1.dp,
+                    color = borderColor,
                     shape = MaterialTheme.shapes.medium
                 ),
             contentAlignment = Alignment.Center
@@ -511,12 +535,15 @@ fun PremiumOutlinedTextField(
     singleLine: Boolean = true,
     trailingIcon: @Composable (() -> Unit)? = null
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val iconTint = if (isLight) CheatLockLightPrimary else CheatLockPurpleSoft
+
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
         leadingIcon = leadingIcon?.let { icon ->
-            { Icon(icon, contentDescription = null, tint = CheatLockPurpleSoft) }
+            { Icon(icon, contentDescription = null, tint = iconTint) }
         },
         trailingIcon = {
             if (isPassword && onVisibilityToggle != null) {
@@ -524,7 +551,7 @@ fun PremiumOutlinedTextField(
                     Icon(
                         imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                         contentDescription = if (passwordVisible) "Hide password" else "Show password",
-                        tint = CheatLockPurpleSoft
+                        tint = iconTint
                     )
                 }
             } else if (trailingIcon != null) {
@@ -538,13 +565,16 @@ fun PremiumOutlinedTextField(
         },
         singleLine = singleLine,
         shape = MaterialTheme.shapes.medium,
-        colors = TextFieldDefaults.colors(
-            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f),
-            focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-            unfocusedIndicatorColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
-            focusedLabelColor = MaterialTheme.colorScheme.primary,
-            cursorColor = MaterialTheme.colorScheme.primary
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = if (isLight) Color.White else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            unfocusedContainerColor = if (isLight) Color.White else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f),
+            focusedBorderColor = if (isLight) CheatLockLightPrimary else MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = if (isLight) CheatLockLightBorder else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+            focusedLabelColor = if (isLight) CheatLockLightPrimary else MaterialTheme.colorScheme.primary,
+            unfocusedLabelColor = if (isLight) CheatLockLightTextSecondary else MaterialTheme.colorScheme.onSurfaceVariant,
+            focusedTextColor = if (isLight) CheatLockLightTextPrimary else CheatLockWhite,
+            unfocusedTextColor = if (isLight) CheatLockLightTextPrimary else CheatLockWhite,
+            cursorColor = if (isLight) CheatLockLightPrimary else MaterialTheme.colorScheme.primary
         ),
         modifier = modifier.fillMaxWidth()
     )
@@ -558,12 +588,15 @@ fun MetricTile(
     color: Color = CheatLockPurpleSoft,
     helper: String? = null
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val finalColor = if (isLight && color == CheatLockPurpleSoft) CheatLockLightPrimary else color
+
     PremiumCard(modifier = modifier, elevated = false) {
         Column {
             Text(
                 value,
                 style = MaterialTheme.typography.headlineSmall,
-                color = color,
+                color = finalColor,
                 fontWeight = FontWeight.ExtraBold
             )
             Spacer(modifier = Modifier.height(4.dp))
@@ -576,7 +609,7 @@ fun MetricTile(
                 Text(
                     helper,
                     style = MaterialTheme.typography.labelSmall,
-                    color = CheatLockTextTertiaryDark
+                    color = if (isLight) CheatLockLightTextMuted else CheatLockTextTertiaryDark
                 )
             }
         }
@@ -655,6 +688,10 @@ fun EmptyState(
     onAction: (() -> Unit)? = null,
     icon: ImageVector = Icons.Default.Lock
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val iconTint = if (isLight) CheatLockLightPrimary else CheatLockPurpleSoft
+    val iconBg = if (isLight) CheatLockLightPrimaryContainer else CheatLockPurpleSoft.copy(alpha = 0.14f)
+
     PremiumCard(elevated = false) {
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -664,13 +701,13 @@ fun EmptyState(
                 modifier = Modifier
                     .size(52.dp)
                     .clip(CircleShape)
-                    .background(CheatLockPurpleSoft.copy(alpha = 0.14f)),
+                    .background(iconBg),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = CheatLockPurpleSoft,
+                    tint = iconTint,
                     modifier = Modifier.size(26.dp)
                 )
             }
@@ -767,6 +804,10 @@ fun FeatureRow(
     subtitle: String,
     tint: Color = CheatLockPurpleSoft
 ) {
+    val isLight = MaterialTheme.colorScheme.background == CheatLockLightBackground
+    val finalTint = if (isLight && tint == CheatLockPurpleSoft) CheatLockLightPrimary else tint
+    val bgTint = if (isLight && tint == CheatLockPurpleSoft) CheatLockLightPrimaryContainer else finalTint.copy(alpha = 0.14f)
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -775,10 +816,10 @@ fun FeatureRow(
             modifier = Modifier
                 .size(40.dp)
                 .clip(MaterialTheme.shapes.small)
-                .background(tint.copy(alpha = 0.14f)),
+                .background(bgTint),
             contentAlignment = Alignment.Center
         ) {
-            Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+            Icon(imageVector = icon, contentDescription = null, tint = finalTint, modifier = Modifier.size(20.dp))
         }
         Spacer(modifier = Modifier.width(12.dp))
         Column {

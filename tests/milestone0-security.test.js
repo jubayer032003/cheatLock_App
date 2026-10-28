@@ -7,6 +7,7 @@ import { submissionsRouter } from "../backend/src/routes/submissions.js";
 import { tenantsRouter } from "../backend/src/routes/tenants.js";
 import { emitTeacherCommand } from "../backend/src/socket/proctoring.js";
 import { Exam } from "../backend/src/models/Exam.js";
+import { ExamSession } from "../backend/src/models/ExamSession.js";
 import { Submission } from "../backend/src/models/Submission.js";
 import { User } from "../backend/src/models/User.js";
 import { AuditLog } from "../backend/src/models/AuditLog.js";
@@ -199,15 +200,24 @@ test("a teacher cannot send Socket.IO commands to an exam they do not own", asyn
 
 test("authorized teacher commands still work", async () => {
   installModelMocks();
+  exams[0].status = "LIVE";
+  exams[0].assignedStudents = ["student-a@example.edu"];
+  const originalFind = ExamSession.findOne;
+  ExamSession.findOne = () => queryResult({ status: "IN_PROGRESS", startedAt: 123 });
+  try {
   await emitTeacherCommand(fakeIo(), users.find((item) => item._id === teacherAUserId), {
     examId: examAId,
     studentId: "student-a@example.edu",
     command: "WARN_STUDENT",
     message: "Focus on the exam window.",
+    attemptStartedAt: 123,
   });
+  } finally {
+    ExamSession.findOne = originalFind;
+  }
 
   assert.equal(emitted.length, 1);
-  assert.equal(emitted[0].room, `exam:${examAId}`);
+  assert.match(emitted[0].room, /^attempt:[a-f0-9]{64}$/);
   assert.equal(emitted[0].event, "teacher_command");
   assert.equal(emitted[0].payload.command, "WARN_STUDENT");
 });

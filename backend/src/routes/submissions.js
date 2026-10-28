@@ -4,6 +4,7 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { Exam } from "../models/Exam.js";
 import { ExamSession } from "../models/ExamSession.js";
 import { Submission } from "../models/Submission.js";
+import { admitSubmission, submissionWarningCounts, submissionAnswers } from "../services/submissionAdmission.js";
 
 export const submissionsRouter = express.Router();
 
@@ -31,27 +32,15 @@ async function resolveSubmissionExamId(studentId, rawExamId) {
   return examId;
 }
 
-submissionsRouter.post("/warnings", requireAuth, async (req, res, next) => {
+submissionsRouter.post("/warnings", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    const studentId = req.user.role === "STUDENT"
-      ? req.user.identifier.trim().toLowerCase()
-      : String(req.body.studentId || req.user.identifier).trim().toLowerCase();
+    const studentId = req.user.identifier;
     const examId = await resolveSubmissionExamId(studentId, req.body.examId);
 
-    if (!examId) {
-      const error = new Error("No active exam session found for warning registration.");
-      error.status = 400;
-      throw error;
-    }
-
-    const appSwitchWarnings = Number(req.body.appSwitchWarnings || 0);
-    const faceMissingWarnings = Number(req.body.faceMissingWarnings || 0);
-    const audioWarnings = Number(req.body.audioWarnings || 0);
-    const phoneWarnings = Number(req.body.phoneWarnings || 0);
-    const totalWarnings = Number(req.body.totalWarnings || 0);
-
+    const { exam } = await admitSubmission(req.user, examId, req.body);
+    const { appSwitchWarnings, faceMissingWarnings, audioWarnings, phoneWarnings, totalWarnings } = submissionWarningCounts(req.body);
     const submission = await Submission.findOneAndUpdate(
-      { studentId, examId },
+      { studentId, examId: exam._id },
       {
         $inc: {
           appSwitchWarnings,
@@ -61,7 +50,7 @@ submissionsRouter.post("/warnings", requireAuth, async (req, res, next) => {
           totalWarnings,
         },
         $set: {
-          riskLevel: req.body.riskLevel || "Low Risk",
+          riskLevel: ["Low Risk", "Medium Risk", "High Risk"].includes(req.body.riskLevel) ? req.body.riskLevel : "Low Risk",
           submittedAt: Number(req.body.submittedAt) || Date.now(),
         }
       },
@@ -77,52 +66,36 @@ submissionsRouter.post("/warnings", requireAuth, async (req, res, next) => {
   }
 });
 
-submissionsRouter.post("/", requireAuth, async (req, res, next) => {
+submissionsRouter.post("/", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    const studentId = req.user.role === "STUDENT"
-      ? req.user.identifier.trim().toLowerCase()
-      : String(req.body.studentId || req.user.identifier).trim().toLowerCase();
+    const studentId = req.user.identifier;
     const examId = await resolveSubmissionExamId(studentId, req.body.examId);
 
-    const totalWarnings =
-      Number(req.body.appSwitchWarnings || 0) +
-      Number(req.body.faceMissingWarnings || 0) +
-      Number(req.body.audioWarnings || 0) +
-      Number(req.body.phoneWarnings || 0);
-
+    const { exam, session } = await admitSubmission(req.user, examId, req.body, true);
+    if (session.status === "SUBMITTED") {
+      const existing = await Submission.findOne({ studentId, examId: exam._id }).lean();
+      if (!existing) throw Object.assign(new Error("Submission recovery is required."), { status: 409, code: "SUBMISSION_RECOVERY_REQUIRED" });
+      return res.status(200).json({ submission: existing });
+    }
+    const counts = submissionWarningCounts(req.body);
+    const answers = submissionAnswers(req.body.answers ?? [], exam);
     const submissionPayload = {
-      studentId,
-      answers: req.body.answers || [],
-      appSwitchWarnings: Number(req.body.appSwitchWarnings || 0),
-      faceMissingWarnings: Number(req.body.faceMissingWarnings || 0),
-      audioWarnings: Number(req.body.audioWarnings || 0),
-      phoneWarnings: Number(req.body.phoneWarnings || 0),
-      totalWarnings,
-      riskLevel: req.body.riskLevel || "Low Risk",
-      submittedAt: Number(req.body.submittedAt) || Date.now(),
-      examId: examId || undefined,
+      studentId, examId: exam._id, answers, ...counts,
+      riskLevel: ["Low Risk", "Medium Risk", "High Risk"].includes(req.body.riskLevel) ? req.body.riskLevel : "Low Risk",
+      submittedAt: Date.now(),
+      grade: null, feedback: "", gradedAt: null,
     };
-
-    const submission = examId
-      ? await Submission.findOneAndUpdate(
-          { studentId, examId },
-          { $set: submissionPayload },
-          { new: true, upsert: true, setDefaultsOnInsert: true }
-        )
-      : await Submission.create(submissionPayload);
-
-    await ExamSession.findOneAndUpdate(
-      { studentId, ...(examId ? { examId } : {}) },
-      {
-        $set: {
-          status: "SUBMITTED",
-          submittedAt: Date.now(),
-          onlineStatus: "OFFLINE",
-        },
-      },
-      { upsert: true }
+    const submission = await Submission.findOneAndUpdate(
+      { studentId, examId: exam._id },
+      { $set: submissionPayload },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
     );
-
+    const finalized = await ExamSession.findOneAndUpdate(
+      { _id: session._id, studentId, examId: exam._id, status: "IN_PROGRESS", startedAt: session.startedAt },
+      { $set: { status: "SUBMITTED", submittedAt: submissionPayload.submittedAt, onlineStatus: "OFFLINE" } },
+      { new: true }
+    );
+    if (!finalized) throw Object.assign(new Error("The exam attempt changed while submitting."), { status: 409, code: "STALE_EXAM_ATTEMPT" });
     res.status(201).json({
       submission,
     });
@@ -174,8 +147,8 @@ submissionsRouter.patch(
       const patch = {};
       if (req.body.grade !== undefined) patch.grade = Number(req.body.grade);
       if (req.body.feedback !== undefined) patch.feedback = String(req.body.feedback || "").trim();
-      if (Object.prototype.hasOwnProperty.call(patch, "grade") && !Number.isFinite(patch.grade)) {
-        const error = new Error("A valid numeric grade is required.");
+      if (Object.prototype.hasOwnProperty.call(patch, "grade") && (!Number.isFinite(patch.grade) || patch.grade < 0 || patch.grade > 100)) {
+        const error = new Error("A grade between 0 and 100 is required.");
         error.status = 400;
         throw error;
       }

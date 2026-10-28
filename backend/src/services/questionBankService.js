@@ -1,4 +1,5 @@
 import { getSupabaseAdminClient, throwSupabaseError } from "./supabaseClient.js";
+import { isMissingExamHierarchyError } from "./supabaseErrors.js";
 import {
   detectDuplicatesForChapter,
   parseCsvQuestions,
@@ -125,7 +126,7 @@ export async function deleteExamNode(nodeId, adminId) {
   try {
     requiredUuid(nodeId, "Invalid item.");
     const ids = await collectNodeAndDescendantIds(nodeId);
-    await deleteSelfExamSessionsForNodes(ids);
+    await assertNoSelfExamSessionsForNodes(ids);
     await deleteQuestionsForNodes(ids, adminId);
     const { error } = await getSupabaseAdminClient()
       .from("exam_nodes")
@@ -163,8 +164,11 @@ export async function getNodePath(nodeId) {
   const nodes = await getAllExamNodes({ includeInactive: true });
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const path = [];
+  const visited = new Set();
   let current = byId.get(nodeId);
   while (current) {
+    if (visited.has(current.id)) throwHierarchyCycle();
+    visited.add(current.id);
     path.unshift(current);
     current = current.parentId ? byId.get(current.parentId) : null;
   }
@@ -344,7 +348,7 @@ export async function deleteClass(classId, adminId) {
     const nodeIds = (await getAllExamNodes({ includeInactive: true }))
       .filter((node) => node.categoryId === classId)
       .map((node) => node.id);
-    await deleteSelfExamSessionsForNodes(nodeIds);
+    await assertNoSelfExamSessionsForNodes(nodeIds);
     await deleteQuestionsForNodes(nodeIds, adminId);
     const { error } = await getSupabaseAdminClient()
       .from("exam_categories")
@@ -704,16 +708,39 @@ export async function importChapterQuestions({ chapterId, questions, adminId }) 
 export async function collectNodeAndDescendantIds(nodeId) {
   requiredUuid(nodeId, "Invalid node.");
   const nodes = await getAllExamNodes({ includeInactive: true });
+  return collectDescendantIds(nodes, nodeId);
+}
+
+export function collectDescendantIds(nodes, nodeId) {
   const childrenByParent = new Map();
   for (const node of nodes) {
     if (!node.parentId) continue;
     childrenByParent.set(node.parentId, [...(childrenByParent.get(node.parentId) || []), node.id]);
   }
   const ids = [nodeId];
+  const visited = new Set(ids);
   for (let index = 0; index < ids.length; index += 1) {
-    ids.push(...(childrenByParent.get(ids[index]) || []));
+    for (const childId of childrenByParent.get(ids[index]) || []) {
+      if (visited.has(childId)) throwHierarchyCycle();
+      visited.add(childId);
+      ids.push(childId);
+    }
   }
   return ids;
+}
+
+function throwHierarchyCycle() {
+  const error = new Error("Question bank hierarchy contains a cycle or duplicate node.");
+  error.status = 409;
+  error.code = "QUESTION_BANK_HIERARCHY_INVALID";
+  throw error;
+}
+
+function throwReferencedContent() {
+  const error = new Error("This content is referenced by self exam attempts. Deactivate it instead of deleting it.");
+  error.status = 409;
+  error.code = "QUESTION_BANK_CONTENT_IN_USE";
+  throw error;
 }
 
 async function deleteQuestionsForNodes(nodeIds, adminId) {
@@ -740,70 +767,26 @@ async function deleteQuestionsForNodes(nodeIds, adminId) {
 async function deleteQuestionRows(questionIds) {
   const uniqueQuestionIds = [...new Set((questionIds || []).filter(Boolean))];
   if (uniqueQuestionIds.length === 0) return;
-  const client = getSupabaseAdminClient();
-
-  const { error: answerError } = await client
-    .from("question_bank_self_exam_answers")
-    .delete()
-    .in("question_id", uniqueQuestionIds);
-  throwSupabaseError(answerError);
-
-  const { error: sessionQuestionError } = await client
-    .from("question_bank_self_exam_session_questions")
-    .delete()
-    .in("question_id", uniqueQuestionIds);
-  throwSupabaseError(sessionQuestionError);
-
-  const { error: tagError } = await client
-    .from("question_bank_question_tag_map")
-    .delete()
-    .in("question_id", uniqueQuestionIds);
-  throwSupabaseError(tagError);
-
-  const { error: optionError } = await client
-    .from("question_bank_question_options")
-    .delete()
-    .in("question_id", uniqueQuestionIds);
-  throwSupabaseError(optionError);
-
-  const { error: deleteError } = await client
+  // A single PostgreSQL statement preserves RESTRICT protections for attempts.
+  // Options/tags cascade only when the entire parent deletion succeeds.
+  const { error } = await getSupabaseAdminClient()
     .from("question_bank_questions")
     .delete()
     .in("id", uniqueQuestionIds);
-  throwSupabaseError(deleteError);
+  if (error?.code === "23503") throwReferencedContent();
+  throwSupabaseError(error);
 }
 
-async function deleteSelfExamSessionsForNodes(nodeIds) {
+async function assertNoSelfExamSessionsForNodes(nodeIds) {
   const uniqueNodeIds = [...new Set((nodeIds || []).filter(Boolean))];
-  if (uniqueNodeIds.length === 0) return 0;
-  const client = getSupabaseAdminClient();
-  const { data: sessions, error: sessionLookupError } = await client
+  if (uniqueNodeIds.length === 0) return;
+  const { data, error } = await getSupabaseAdminClient()
     .from("question_bank_self_exam_sessions")
     .select("id")
-    .in("node_id", uniqueNodeIds);
-  throwSupabaseError(sessionLookupError);
-
-  const sessionIds = (sessions || []).map((session) => session.id);
-  if (sessionIds.length === 0) return 0;
-
-  const { error: answerError } = await client
-    .from("question_bank_self_exam_answers")
-    .delete()
-    .in("session_id", sessionIds);
-  throwSupabaseError(answerError);
-
-  const { error: sessionQuestionError } = await client
-    .from("question_bank_self_exam_session_questions")
-    .delete()
-    .in("session_id", sessionIds);
-  throwSupabaseError(sessionQuestionError);
-
-  const { error: sessionDeleteError } = await client
-    .from("question_bank_self_exam_sessions")
-    .delete()
-    .in("id", sessionIds);
-  throwSupabaseError(sessionDeleteError);
-  return sessionIds.length;
+    .in("node_id", uniqueNodeIds)
+    .limit(1);
+  throwSupabaseError(error);
+  if (data?.length) throwReferencedContent();
 }
 
 async function getAllExamNodes({ includeInactive = false } = {}) {
@@ -839,6 +822,9 @@ async function assertNodePayload(body = {}, { existingNodeId = null } = {}) {
     const parent = await findNode(parentId);
     if (parent.categoryId !== categoryId) throwRequest("Parent node must belong to the same category.");
     if (existingNodeId && parent.id === existingNodeId) throwRequest("A node cannot be its own parent.");
+    if (existingNodeId && (await collectNodeAndDescendantIds(existingNodeId)).includes(parentId)) {
+      throwRequest("A node cannot be moved under its descendant.");
+    }
   } else {
     await assertCategoryExists(categoryId);
   }
@@ -1442,15 +1428,8 @@ async function deleteLegacyRows({ classId = null, subjectId = null, chapterId = 
 }
 
 async function deleteSessionsByIds(sessionIds) {
-  const uniqueSessionIds = [...new Set((sessionIds || []).filter(Boolean))];
-  if (uniqueSessionIds.length === 0) return;
-  const client = getSupabaseAdminClient();
-  const { error: answerError } = await client.from("question_bank_self_exam_answers").delete().in("session_id", uniqueSessionIds);
-  throwSupabaseError(answerError);
-  const { error: sessionQuestionError } = await client.from("question_bank_self_exam_session_questions").delete().in("session_id", uniqueSessionIds);
-  throwSupabaseError(sessionQuestionError);
-  const { error: sessionError } = await client.from("question_bank_self_exam_sessions").delete().in("id", uniqueSessionIds);
-  throwSupabaseError(sessionError);
+  // Preserve legacy attempts rather than deleting their answers and results.
+  if ((sessionIds || []).filter(Boolean).length > 0) throwReferencedContent();
 }
 
 async function getLegacyQuestionScope(id) {
@@ -1594,12 +1573,7 @@ function serializeLegacyNode(row) {
   };
 }
 
-function isMissingExamHierarchyError(error) {
-  const message = String(error?.message || "");
-  return error?.code === "PGRST205"
-    || error?.code === "PGRST204"
-    || /exam_categories|exam_nodes|node_id|Could not find/i.test(message);
-}
+
 
 async function writeAuditLog(adminId, action, entityType, entityId, metadata = {}) {
   const { error } = await getSupabaseAdminClient()

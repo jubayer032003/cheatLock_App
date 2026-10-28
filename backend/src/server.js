@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import { bulkJsonParser, bulkSubmissionPath } from './routes/selfExamBulk.js';
 import helmet from "helmet";
 import http from "node:http";
 import mongoose from "mongoose";
@@ -23,7 +24,7 @@ import { questionBankRouter } from "./routes/questionBank.js";
 import { selfExamRouter } from "./routes/selfExam.js";
 import { Server } from "socket.io";
 import { configureProctoringSocket } from "./socket/proctoring.js";
-import { rateLimiter } from "./middleware/rateLimiter.js";
+import { rateLimiter, monitoringIngressLimiter } from "./middleware/rateLimiter.js";
 import { logger } from "./services/logger.js";
 import { configureEvidenceRetentionCleanup } from "./services/evidenceRetention.js";
 import { configureSocketAdapter } from "./services/socketAdapter.js";
@@ -53,14 +54,17 @@ app.use((req, res, next) => {
   next();
 });
 app.use("/health", healthRouter);
+// Terminated here by the authenticated router; unrelated routes retain their limits.
+app.use("/proctoring/events", monitoringIngressLimiter, express.json({ limit: "3mb" }));
+app.use("/proctoring", proctoringRouter);
 app.use(rateLimiter);
+app.use(bulkSubmissionPath, bulkJsonParser);
 app.use(express.json({ limit: "3mb" }));
 
 app.use("/auth", authRouter);
 app.use("/classes", classesRouter);
 app.use("/community", communityRouter);
 app.use("/exams", examsRouter);
-app.use("/proctoring", proctoringRouter);
 app.use("/sessions", sessionsRouter);
 app.use("/submissions", submissionsRouter);
 app.use("/teacher", teacherRouter);

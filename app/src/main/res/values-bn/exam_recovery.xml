@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="exam_recovery_title">এগিয়ে যাওয়া যাচ্ছে না</string>
+    <string name="exam_recovery_summary">CheatLock-এ একটি সমস্যা হয়েছে। অ্যাপটি আবার খুলে চেষ্টা করুন।</string>
+    <string name="exam_recovery_help_title">পরবর্তী করণীয়</string>
+    <string name="exam_recovery_help">পরীক্ষা এখনও না খুললে আবার চেষ্টা করার আগে আপনার শিক্ষকের সঙ্গে যোগাযোগ করুন। একই ডিভাইস ব্যবহার করুন।</string>
+    <string name="exam_recovery_reopen">CheatLock আবার খুলুন</string>
+    <string name="exam_recovery_support_code">সহায়তা কোড: %1$s</string>
+</resources>

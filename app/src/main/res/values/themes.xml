@@ -2,11 +2,10 @@
 <resources>
 
     <style name="Theme.CheatLock" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">@color/cheatlock_background</item>
-        <item name="android:colorAccent">@color/cheatlock_surface</item>
-        <item name="android:navigationBarColor">@color/cheatlock_background</item>
-        <item name="android:statusBarColor">@color/cheatlock_background</item>
-        <item name="android:windowLightNavigationBar">false</item>
-        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">@color/cheatlock_light_background</item>
+        <item name="android:colorAccent">@color/cheatlock_primary</item>
+        <item name="android:navigationBarColor">@color/cheatlock_light_background</item>
+        <item name="android:statusBarColor">@color/cheatlock_light_background</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

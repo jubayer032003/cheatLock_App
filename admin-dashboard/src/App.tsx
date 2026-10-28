@@ -39,10 +39,16 @@ export default function App() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
-        <Route path="question-bank" element={<RouteFallback><QuestionBankAdminPage initialTab="questions" /></RouteFallback>} />
-        <Route path="question-bank/hierarchy" element={<RouteFallback><QuestionBankAdminPage initialTab="structure" /></RouteFallback>} />
-        <Route path="question-bank/questions/new" element={<RouteFallback><QuestionBankAdminPage initialTab="questions" mode="new" /></RouteFallback>} />
-        <Route path="question-bank/questions/:questionId/edit" element={<RouteFallback><QuestionBankAdminPage initialTab="questions" mode="edit" /></RouteFallback>} />
+        <Route path="academic" element={<RouteFallback><QuestionBankAdminPage initialTrack="academic" /></RouteFallback>} />
+        <Route path="admission" element={<RouteFallback><QuestionBankAdminPage initialTrack="admission" /></RouteFallback>} />
+        <Route path="questions" element={<RouteFallback><QuestionBankAdminPage mode="questions" /></RouteFallback>} />
+        <Route path="import" element={<RouteFallback><QuestionBankAdminPage mode="import" /></RouteFallback>} />
+        <Route path="profile" element={<DashboardPage />} />
+        <Route path="settings" element={<DashboardPage />} />
+        <Route path="question-bank" element={<Navigate to="/questions" replace />} />
+        <Route path="question-bank/hierarchy" element={<Navigate to="/academic" replace />} />
+        <Route path="question-bank/questions/new" element={<RouteFallback><QuestionBankAdminPage mode="new" /></RouteFallback>} />
+        <Route path="question-bank/questions/:questionId/edit" element={<RouteFallback><QuestionBankAdminPage mode="edit" /></RouteFallback>} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

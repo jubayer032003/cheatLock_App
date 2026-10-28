@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="teacher_exam_questions_unavailable">Exam questions are unavailable. Reload the exam and try again.</string>
+    <string name="teacher_exam_question_unsupported">Question %1$d uses a format this app cannot open. Ask your teacher to check the question formats for this exam.</string>
+    <string name="teacher_exam_question_incomplete">Question %1$d has incomplete data. Reload the exam. If the problem persists, contact your teacher.</string>
+</resources>

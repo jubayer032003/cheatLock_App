@@ -5,6 +5,7 @@ import {
   isStudentProctoringEvent,
 } from "../socket/proctoring.js";
 import { logger } from "../services/logger.js";
+import { monitoringUserLimiter } from "../middleware/rateLimiter.js";
 
 export const proctoringRouter = express.Router();
 
@@ -12,6 +13,7 @@ proctoringRouter.post(
   "/events",
   requireAuth,
   requireRole("STUDENT"),
+  monitoringUserLimiter,
   async (req, res, next) => {
     try {
       const eventName = String(req.body?.eventName || "").trim();

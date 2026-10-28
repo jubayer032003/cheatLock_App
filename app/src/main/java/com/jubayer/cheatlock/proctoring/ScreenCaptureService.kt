@@ -24,6 +24,7 @@ import com.jubayer.cheatlock.R
 class ScreenCaptureService : Service() {
 
     private var captureManager: ScreenCaptureManager? = null
+    private var foregroundReady = false
 
     override fun onCreate() {
         Log.d("CHEATLOCK_FLOW", "ScreenCaptureService onCreate: Service starting")
@@ -43,8 +44,10 @@ class ScreenCaptureService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            foregroundReady = true
         }.onFailure { error ->
             Log.e("CHEATLOCK_FLOW", "ScreenCaptureService onCreate: Failed to start foreground service", error)
+            ScreenCaptureCallbacks.onStartFailure?.invoke(getString(R.string.screen_capture_start_failed))
             stopSelf()
         }
     }
@@ -73,6 +76,12 @@ class ScreenCaptureService : Service() {
             }
         }.onFailure { error ->
             Log.e("CHEATLOCK_FLOW", "ScreenCaptureService onStartCommand: Failed to start foreground service", error)
+            ScreenCaptureCallbacks.onStartFailure?.invoke(getString(R.string.screen_capture_start_failed))
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (!foregroundReady) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -93,6 +102,7 @@ class ScreenCaptureService : Service() {
             val projectionManager = getSystemService(MediaProjectionManager::class.java)
             if (projectionManager == null) {
                 Log.e("CHEATLOCK_FLOW", "ScreenCaptureService onStartCommand: MediaProjectionManager is not available on this device.")
+                ScreenCaptureCallbacks.onStartFailure?.invoke(getString(R.string.screen_capture_start_failed))
                 stopCapture()
                 stopSelf()
                 return@runCatching
@@ -104,25 +114,29 @@ class ScreenCaptureService : Service() {
             
             if (mediaProjection == null) {
                 Log.e("CHEATLOCK_FLOW", "ScreenCaptureService onStartCommand: MediaProjection was NULL. Device might not support this action or session was cancelled.")
+                ScreenCaptureCallbacks.onStartFailure?.invoke(getString(R.string.screen_capture_start_failed))
                 stopCapture()
                 stopSelf()
                 return@runCatching
             }
 
             stopCapture()
-            captureManager = ScreenCaptureManager(applicationContext, mediaProjection) { snapshot ->
-                ScreenCaptureCallbacks.onSnapshot?.invoke(snapshot)
-            }.also { manager ->
-                manager.start()
+            val snapshotCallback = ScreenCaptureCallbacks.onSnapshot
+            val manager = ScreenCaptureManager(applicationContext, mediaProjection) { snapshot, capturedAt ->
+                snapshotCallback?.invoke(snapshot, capturedAt)
             }
+            captureManager = manager
+            manager.start()
             Log.d("CHEATLOCK_FLOW", "ScreenCaptureService onStartCommand: Screen capture started successfully.")
+            ScreenCaptureCallbacks.onReady?.invoke()
         }.onFailure { error ->
             Log.e("CHEATLOCK_FLOW", "ScreenCaptureService onStartCommand: Screen capture setup failed", error)
+            ScreenCaptureCallbacks.onStartFailure?.invoke(getString(R.string.screen_capture_start_failed))
             stopCapture()
             stopSelf()
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     /**
@@ -210,12 +224,15 @@ class ScreenCaptureService : Service() {
             val intent = Intent(context, ScreenCaptureService::class.java).apply {
                 action = ACTION_STOP
             }
-            context.startService(intent)
+            context.stopService(intent)
         }
     }
 }
 
 /** Snapshot callback from [ScreenCaptureService] to the UI layer. */
 object ScreenCaptureCallbacks {
-    var onSnapshot: ((String) -> Unit)? = null
+    @Volatile var onReady: (() -> Unit)? = null
+    @Volatile var onStartFailure: ((String) -> Unit)? = null
+    @Volatile
+    var onSnapshot: ((String, Long) -> Unit)? = null
 }

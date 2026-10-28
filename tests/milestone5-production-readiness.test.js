@@ -59,6 +59,7 @@ test("deployment files reference canonical backend and readiness endpoints", asy
   const compose = await read("docker-compose.yml");
   const backendDockerfile = await read("backend/Dockerfile");
   const manifest = await read("k8s/cheatlock-deployment.yaml");
+  const renderBlueprint = await read("render.yaml");
 
   assert.match(workflow, /backend\/src/);
   assert.match(compose, /context:\s+\.\/backend/);
@@ -69,6 +70,9 @@ test("deployment files reference canonical backend and readiness endpoints", asy
   assert.match(manifest, /path: \/health\/live/);
   assert.doesNotMatch(manifest, /image: cheatlock\/backend:latest/);
   assert.doesNotMatch(manifest, /image: cheatlock\/dashboard:latest/);
+  assert.match(renderBlueprint, /rootDir:\s+backend/);
+  assert.match(renderBlueprint, /startCommand:\s+npm start/);
+  assert.match(renderBlueprint, /healthCheckPath:\s+\/health\/ready/);
 });
 
 test("repository hygiene ignores generated local artifacts while preserving examples", async () => {

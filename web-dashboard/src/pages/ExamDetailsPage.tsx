@@ -1,3 +1,4 @@
+import { androidUnsupportedQuestions } from "../lib/androidCompatibility";
 import {
   Activity,
   BookOpen,
@@ -15,7 +16,7 @@ import {
   Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { AssignStudentsToExamPanel } from "../components/AssignStudentsToExamPanel";
 import { QrCode } from "../components/QrCode";
@@ -35,15 +36,22 @@ export function ExamDetailsPage() {
   const [scheduledStartAt, setScheduledStartAt] = useState("");
   const [scheduledEndAt, setScheduledEndAt] = useState("");
   const allowedActions = lifecycleActions(exam?.status || "DRAFT");
+  const routeId = useRef(examId);
+  routeId.current = examId;
+  const lifecyclePending = useRef(false);
 
   useEffect(() => {
     if (!examId) return;
     setLoadError("");
+    setMessage("");
     setLoading(true);
+    let active = true;
+    setExam(null);
     fetchTeacherExam(examId)
-      .then(setExam)
-      .catch((error) => setLoadError(readErrorMessage(error)))
-      .finally(() => setLoading(false));
+      .then((value) => { if (active) setExam(value); })
+      .catch((error) => { if (active) setLoadError(readErrorMessage(error)); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, [examId]);
 
   useEffect(() => {
@@ -54,11 +62,14 @@ export function ExamDetailsPage() {
 
   async function refreshExams() {
     if (!examId) return;
-    setExam(await fetchTeacherExam(examId));
+    const updated = await fetchTeacherExam(examId);
+    if (routeId.current === examId) setExam(updated);
   }
 
   async function runLifecycle(action: LifecycleAction) {
-    if (!exam?.id) return;
+    if (!exam?.id || lifecyclePending.current) return;
+    lifecyclePending.current = true;
+    const mutationExamId = exam.id;
     setSaving(true);
     setMessage("");
     try {
@@ -68,10 +79,11 @@ export function ExamDetailsPage() {
         scheduledEndAt: scheduledEndAt ? new Date(scheduledEndAt).toISOString() : undefined,
       });
       await refreshExams();
-      setMessage("Exam lifecycle updated.");
+      if (routeId.current === mutationExamId) setMessage("Exam lifecycle updated.");
     } catch (error) {
-      setMessage(readErrorMessage(error));
+      if (routeId.current === mutationExamId) setMessage(readErrorMessage(error));
     } finally {
+      lifecyclePending.current = false;
       setSaving(false);
     }
   }
@@ -97,6 +109,11 @@ export function ExamDetailsPage() {
   return (
     <div className="exam-workspace space-y-6">
       <ControlRoomHeader exam={exam} />
+      {androidUnsupportedQuestions(exam.questions).length > 0 && (
+        <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:bg-amber-950 dark:text-amber-100">
+          Android compatibility: questions {androidUnsupportedQuestions(exam.questions).join(", ")} are not supported by the student Android app. Android students can answer MCQ and CQ formats; check this exam before starting it for them.
+        </p>
+      )}
 
       <section className="grid gap-4 lg:grid-cols-3" aria-label="Exam facts">
         <FactCard icon={CalendarClock} label="Schedule" value={scheduleSummary(exam)} helper={lifecycleMessage(status)} />
@@ -120,7 +137,7 @@ export function ExamDetailsPage() {
 
           <OperationsPanel exam={exam} />
 
-          <AssignStudentsToExamPanel exam={exam} onExamUpdated={setExam} />
+          <AssignStudentsToExamPanel exam={exam} onExamUpdated={(updated) => { if (updated.id === routeId.current) setExam(updated); }} />
 
           <QuestionOverview exam={exam} />
         </div>

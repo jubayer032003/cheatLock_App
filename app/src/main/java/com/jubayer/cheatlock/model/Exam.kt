@@ -24,6 +24,7 @@ data class ExamQuestion(
     val type: QuestionType = QuestionType.CQ,
     val text: String,
     val options: List<String> = emptyList(),
+    val optionIds: List<String> = emptyList(),
     val correctAnswer: String = ""
 )
 
@@ -31,6 +32,10 @@ enum class QuestionType {
     MCQ,
     CQ
 }
+
+// Normal teacher-exam JSON omits optionIds. Gson can bypass Kotlin constructor
+// defaults, so the declared non-null list can still be null after deserialization.
+internal fun ExamQuestion.optionIdAt(index: Int): String? = optionIds.orEmpty().getOrNull(index)
 
 enum class ExamStatus {
     DRAFT,

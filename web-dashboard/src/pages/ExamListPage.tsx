@@ -16,12 +16,13 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AssignStudentsToExamPanel } from "../components/AssignStudentsToExamPanel";
+import type { AssignmentRoster } from "../components/AssignStudentsToExamPanel";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { QuestionBuilder } from "../components/question-builder/QuestionBuilder";
 import { QrCode } from "../components/QrCode";
 import { Badge, Card, EmptyState, ErrorState, SkeletonBlock, cn } from "../components/ui";
-import { createExam, deleteExam, fetchClasses, fetchTeacherExams } from "../lib/api";
+import { createExam, deleteExam, fetchClasses, fetchCommunity, fetchTeacherExams } from "../lib/api";
 import type { Exam, ExamQuestion, ExamStatus, TeacherClass } from "../types";
 
 export function ExamListPage() {
@@ -30,6 +31,7 @@ export function ExamListPage() {
   const [createdExam, setCreatedExam] = useState<Exam | null>(null);
   const [error, setError] = useState("");
   const [deletingExamId, setDeletingExamId] = useState("");
+  const [roster, setRoster] = useState<AssignmentRoster>({ communityStudents: [], classes: [] });
 
   async function loadExams() {
     setError("");
@@ -45,6 +47,22 @@ export function ExamListPage() {
 
   useEffect(() => {
     loadExams();
+  }, []);
+
+  // Every exam card and the creator share the same teacher roster.
+  useEffect(() => {
+    let active = true;
+    fetchCommunity()
+      .then((community) => {
+        if (active) setRoster((current) => ({ ...current, communityStudents: community.students || [] }));
+      })
+      .catch(() => {});
+    fetchClasses()
+      .then((classes) => {
+        if (active) setRoster((current) => ({ ...current, classes }));
+      })
+      .catch(() => {});
+    return () => { active = false; };
   }, []);
 
   async function handleCreate(exam: Exam) {
@@ -138,7 +156,7 @@ export function ExamListPage() {
         </Card>
       )}
 
-      <ExamCreator onCreated={handleCreate} createdExam={createdExam} />
+      <ExamCreator onCreated={handleCreate} createdExam={createdExam} classes={roster.classes} />
 
       <section className="exam-enter exam-enter-delay-2">
         <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
@@ -171,6 +189,7 @@ export function ExamListPage() {
             {exams.map((exam, index) => (
               <ExamListCard
                 exam={exam}
+                roster={roster}
                 key={exam.id || exam.title}
                 onDelete={handleDelete}
                 deleting={deletingExamId === exam.id}
@@ -224,12 +243,14 @@ function WorkspaceMetric({
 
 function ExamListCard({
   exam,
+  roster,
   onDelete,
   deleting,
   onExamUpdated,
   index,
 }: {
   exam: Exam;
+  roster: AssignmentRoster;
   onDelete: (examId: string, examTitle: string) => void;
   deleting: boolean;
   onExamUpdated: (exam: Exam) => void;
@@ -262,6 +283,7 @@ function ExamListCard({
           <AssignStudentsToExamPanel
             className="mt-4 border-slate-200/80 bg-slate-50/80 p-4 shadow-none dark:border-white/10 dark:bg-white/[0.03]"
             exam={exam}
+            roster={roster}
             onExamUpdated={onExamUpdated}
           />
           <div className="mt-4 flex flex-col gap-2 border-t border-slate-200 pt-4 dark:border-white/10 sm:flex-row sm:items-center sm:justify-between">
@@ -312,23 +334,16 @@ function InfoChip({ label, value, mono = false }: { label: string; value: string
   );
 }
 
-function ExamCreator({ onCreated, createdExam }: { onCreated: (exam: Exam) => Promise<void>; createdExam: Exam | null }) {
+function ExamCreator({ onCreated, createdExam, classes }: { onCreated: (exam: Exam) => Promise<void>; createdExam: Exam | null; classes: TeacherClass[] }) {
   const [title, setTitle] = useState("");
   const [duration, setDuration] = useState("10");
   const [assignedStudents, setAssignedStudents] = useState("");
   const [questions, setQuestions] = useState<ExamQuestion[]>([]);
   const [lockAnswers, setLockAnswers] = useState(true);
   const [useCommunity, setUseCommunity] = useState(true);
-  const [classes, setClasses] = useState<TeacherClass[]>([]);
   const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    fetchClasses()
-      .then(setClasses)
-      .catch(() => setClasses([]));
-  }, []);
 
   const manualStudents = useMemo(
     () => assignedStudents.split(",").map((student) => student.trim().toLowerCase()).filter(Boolean),

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="splash_tagline">Secure every exam. Trust every result.</string>
+    <string name="splash_getting_ready">Getting things ready...</string>
+    <string name="splash_connection_failed">Could not restore your session. Check your connection and try again. Your saved session is still on this device.</string>
+    <string name="splash_retry">Retry</string>
+    <string name="splash_continue">Continue to welcome screen</string>
+</resources>

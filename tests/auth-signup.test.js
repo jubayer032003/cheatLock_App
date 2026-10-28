@@ -16,14 +16,26 @@ let nextId = 1;
 
 User.findOne = (criteria = {}) => queryResult(findUser(criteria));
 User.create = async (payload) => {
+  const userId = `user-${nextId++}`;
   const user = {
-    _id: { toString: () => `user-${nextId++}` },
+    _id: { toString: () => userId },
     ...payload,
   };
   users.set(userKey(user.identifier, user.role), user);
   return user;
 };
 User.findById = (id) => queryResult([...users.values()].find((user) => user._id.toString() === String(id)) || null);
+User.findByIdAndUpdate = (id, update = {}) => {
+  const user = [...users.values()].find((candidate) => candidate._id.toString() === String(id));
+  if (!user) return queryResult(null);
+
+  const previousKey = userKey(user.identifier, user.role);
+  if (update.$set?.name !== undefined) user.name = update.$set.name;
+  if (update.$set?.identifier !== undefined) user.identifier = update.$set.identifier;
+  users.delete(previousKey);
+  users.set(userKey(user.identifier, user.role), user);
+  return queryResult(user);
+};
 
 beforeEach(() => {
   clearRateLimiterStateForTests();
@@ -202,6 +214,57 @@ test("admin dashboard uses dedicated admin login endpoint", async () => {
   assert.equal(api.includes("/auth/login"), false);
 });
 
+test("authenticated users can permanently update their profile", async () => {
+  const signupResponse = await post("/auth/signup", {
+    name: "Old Student",
+    identifier: "old.student@example.edu",
+    password: "pass1234",
+  });
+
+  const updateResponse = await patch(
+    "/auth/me",
+    {
+      name: "Updated Student",
+      identifier: " Updated.Student@Example.edu ",
+    },
+    signupResponse.body.token
+  );
+
+  assert.equal(updateResponse.status, 200, updateResponse.body.message);
+  assert.equal(updateResponse.body.user.name, "Updated Student");
+  assert.equal(updateResponse.body.user.identifier, "updated.student@example.edu");
+
+  const meResponse = await get("/auth/me", signupResponse.body.token);
+  assert.equal(meResponse.status, 200, meResponse.body.message);
+  assert.equal(meResponse.body.user.name, "Updated Student");
+  assert.equal(meResponse.body.user.identifier, "updated.student@example.edu");
+});
+
+test("profile update rejects duplicate identifiers for the same role", async () => {
+  await post("/auth/signup", {
+    name: "First Student",
+    identifier: "first.student@example.edu",
+    password: "pass1234",
+  });
+  const secondSignup = await post("/auth/signup", {
+    name: "Second Student",
+    identifier: "second.student@example.edu",
+    password: "pass1234",
+  });
+
+  const updateResponse = await patch(
+    "/auth/me",
+    {
+      name: "Second Student",
+      identifier: "first.student@example.edu",
+    },
+    secondSignup.body.token
+  );
+
+  assert.equal(updateResponse.status, 409, updateResponse.body.message);
+  assert.equal(updateResponse.body.message, "Another account already uses this identifier for the same role.");
+});
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -215,14 +278,29 @@ function createApp() {
 }
 
 async function post(path, body) {
+  return request("POST", path, body);
+}
+
+async function patch(path, body, token) {
+  return request("PATCH", path, body, token);
+}
+
+async function get(path, token) {
+  return request("GET", path, null, token);
+}
+
+async function request(method, path, body, token) {
   const app = createApp();
   const server = app.listen(0);
   try {
     const { port } = server.address();
+    const headers = {};
+    if (body) headers["Content-Type"] = "application/json";
+    if (token) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
     });
     const responseBody = await response.json();
     return {
@@ -247,7 +325,12 @@ function findUser(criteria) {
       .find(Boolean) || null;
   }
 
-  return users.get(userKey(identifier, role)) || null;
+  const user = users.get(userKey(identifier, role)) || null;
+  if (!user) return null;
+
+  const notId = criteria._id?.$ne;
+  if (notId && user._id.toString() === String(notId)) return null;
+  return user;
 }
 
 function queryResult(value) {

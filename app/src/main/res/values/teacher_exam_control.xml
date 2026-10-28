@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="teacher_attempt_reset">Your teacher reset this attempt. Reopen the exam to start the new attempt.</string>
+    <string name="teacher_attempt_locked">This attempt is locked. Your saved answers remain on this device. Contact your teacher.</string>
+</resources>

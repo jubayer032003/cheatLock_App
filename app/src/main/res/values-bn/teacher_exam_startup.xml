@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="teacher_exam_questions_unavailable">পরীক্ষার প্রশ্ন পাওয়া যাচ্ছে না। পরীক্ষাটি আবার লোড করে চেষ্টা করুন।</string>
+    <string name="teacher_exam_question_unsupported">প্রশ্ন %1$d-এর ধরন এই অ্যাপে খোলা যায় না। এই পরীক্ষার প্রশ্নের ধরন যাচাই করতে আপনার শিক্ষককে বলুন।</string>
+    <string name="teacher_exam_question_incomplete">প্রশ্ন %1$d-এর তথ্য অসম্পূর্ণ। পরীক্ষাটি আবার লোড করুন। সমস্যা থেকে গেলে আপনার শিক্ষকের সঙ্গে যোগাযোগ করুন।</string>
+</resources>

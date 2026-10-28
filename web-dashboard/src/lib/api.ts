@@ -17,6 +17,8 @@ import type {
   SessionsResponse,
   SubmissionsResponse,
   QuestionBankChapter,
+  ExamTreeCategory,
+  ExamTreeNode,
   QuestionBankClass,
   QuestionBankQuestion,
   QuestionBankSearchFilters,
@@ -25,7 +27,12 @@ import type {
 } from "../types";
 import type { TeacherClass } from "../types";
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://cheatlock-backend.onrender.com";
+const PRODUCTION_API_BASE_URL = "https://cheatlock-backend.onrender.com";
+const DEVELOPMENT_API_BASE_URL = "http://localhost:3000";
+
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.DEV ? DEVELOPMENT_API_BASE_URL : PRODUCTION_API_BASE_URL);
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
@@ -48,6 +55,11 @@ api.interceptors.response.use(
       if (window.location.pathname !== "/login") {
         window.location.assign("/login");
       }
+    }
+    if (error.response?.status === 429) {
+      const retryAfter = error.response.headers?.["retry-after"];
+      const retrySuffix = retryAfter ? ` Try again in about ${retryAfter} seconds.` : "";
+      error.message = `Too many requests.${retrySuffix}`;
     }
     return Promise.reject(error);
   }
@@ -292,6 +304,71 @@ export async function downloadIntegrityReportPdf(examId: string) {
 export async function fetchAdminQuestionBankClasses() {
   const { data } = await api.get<{ classes: QuestionBankClass[] }>("/question-bank/admin/classes");
   return data.classes;
+}
+
+export async function fetchAdminExamTree() {
+  try {
+    const { data } = await api.get<{ tree: ExamTreeCategory[] }>("/question-bank/admin/tree");
+    return data.tree;
+  } catch (error: any) {
+    if (error?.response?.status !== 404) throw error;
+    return fetchLegacyExamTree();
+  }
+}
+
+async function fetchLegacyExamTree(): Promise<ExamTreeCategory[]> {
+  const classes = await fetchAdminQuestionBankClasses();
+  return Promise.all(
+    classes.map(async (item) => {
+      const subjects = await fetchAdminQuestionBankSubjects(item.id).catch(() => []);
+      const children = await Promise.all(
+        subjects.map(async (subject) => {
+          const chapters = await fetchAdminQuestionBankChapters(subject.id).catch(() => []);
+          return {
+            id: subject.id,
+            categoryId: item.id,
+            parentId: null,
+            name: subject.name,
+            slug: subject.slug,
+            type: "subject" as const,
+            color: "#10b981",
+            displayOrder: subject.displayOrder,
+            isActive: subject.isActive,
+            metadata: { code: subject.code || "" },
+            children: chapters.map((chapter) => ({
+              id: chapter.id,
+              categoryId: item.id,
+              parentId: subject.id,
+              name: chapter.name,
+              slug: chapter.slug,
+              type: "chapter" as const,
+              color: "#2563eb",
+              displayOrder: chapter.displayOrder,
+              isActive: chapter.isActive,
+              metadata: { chapterNumber: chapter.chapterNumber ?? null },
+              children: [],
+            })),
+          };
+        })
+      );
+      return { ...item, color: item.color || "#2563eb", children };
+    })
+  );
+}
+
+export async function createExamTreeNode(payload: Partial<ExamTreeNode> & { categoryId: string; name: string; type: ExamTreeNode["type"] }) {
+  const { data } = await api.post<{ node: ExamTreeNode }>("/question-bank/admin/nodes", payload);
+  return data.node;
+}
+
+export async function updateExamTreeNode(nodeId: string, payload: Partial<ExamTreeNode> & { categoryId: string; name: string; type: ExamTreeNode["type"] }) {
+  const { data } = await api.put<{ node: ExamTreeNode }>(`/question-bank/admin/nodes/${nodeId}`, payload);
+  return data.node;
+}
+
+export async function setExamTreeNodeStatus(nodeId: string, isActive: boolean) {
+  const { data } = await api.patch<{ node: ExamTreeNode }>(`/question-bank/admin/nodes/${nodeId}/status`, { isActive });
+  return data.node;
 }
 
 export async function fetchQuestionBankClasses() {

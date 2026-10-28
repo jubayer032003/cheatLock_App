@@ -23,7 +23,6 @@ export async function requireAuth(req, _res, next) {
   }
 
   try {
-    console.debug("[auth.requireAuth] verifying token header:", header ? header.slice(0, 40) + "..." : "(empty)");
     const decoded = verifyToken(token);
     const user = await User.findById(decoded.sub).select("identifier role tenantId status").lean();
     if (!user) {
@@ -45,7 +44,6 @@ export async function requireAuth(req, _res, next) {
       tenantId: user.tenantId?.toString?.() || decoded.tenantId || null,
       status: user.status || "ACTIVE",
     };
-    console.debug("[auth.requireAuth] token verified; user:", req.user);
     next();
   } catch (err) {
     const error = new Error(err.message === "Account is not active." ? err.message : "Invalid or expired token.");

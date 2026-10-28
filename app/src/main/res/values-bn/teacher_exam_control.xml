@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="teacher_attempt_reset">আপনার শিক্ষক এই প্রচেষ্টা রিসেট করেছেন। নতুন প্রচেষ্টা শুরু করতে পরীক্ষাটি আবার খুলুন।</string>
+    <string name="teacher_attempt_locked">এই প্রচেষ্টা লক করা হয়েছে। সংরক্ষিত উত্তর এই ডিভাইসে রয়েছে। আপনার শিক্ষকের সঙ্গে যোগাযোগ করুন।</string>
+</resources>

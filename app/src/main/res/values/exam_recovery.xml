@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="exam_recovery_title">Unable to continue</string>
+    <string name="exam_recovery_summary">CheatLock encountered a problem. Reopen the app and try again.</string>
+    <string name="exam_recovery_help_title">Next steps</string>
+    <string name="exam_recovery_help">If the exam still does not open, contact your teacher before retrying. Keep using the same device.</string>
+    <string name="exam_recovery_reopen">Reopen CheatLock</string>
+    <string name="exam_recovery_support_code">Support code: %1$s</string>
+</resources>

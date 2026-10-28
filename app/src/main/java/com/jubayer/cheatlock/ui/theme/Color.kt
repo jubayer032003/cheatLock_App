@@ -63,16 +63,40 @@ val CheatLockGradientEnd = CheatLockNavyRich
 val CheatLockOutline = CheatLockNavyBorder
 
 // Specific Theme Palettes
-// LIGHT MODE: Background: #F8FAFC, Surface: #FFFFFF, Primary: #1E3A8A, Secondary: #7C3AED, Text: #111827
-val CheatLockLightBackground = Color(0xFFF8FAFC)
-val CheatLockLightSurface = Color(0xFFFFFFFF)
-val CheatLockLightPrimary = Color(0xFF1E3A8A)
-val CheatLockLightSecondary = Color(0xFF7C3AED)
-val CheatLockLightText = Color(0xFF111827)
+// LIGHT MODE (World-Class EdTech & Security Palette):
+val CheatLockLightBackground = Color(0xFFF6F8FC)       // Soft cool-neutral canvas
+val CheatLockLightBg = CheatLockLightBackground
+val CheatLockLightSurface = Color(0xFFFFFFFF)          // Crisp White Surface
+val CheatLockLightSurfaceSubtle = Color(0xFFF1F5F9)    // Secondary / Subdued Container
+val CheatLockLightSurfaceElevated = Color(0xFFFFFFFF)
+val CheatLockLightBorder = Color(0xFFE2E8F0)           // Clean micro-border
+val CheatLockLightBorderFocus = Color(0xFF2563EB)      // Active focus ring
+val CheatLockLightBorderSubtle = Color(0xFFEDF2F7)
 
-// DARK MODE: Background: #0F172A, Surface: #1E293B, Primary: #3B82F6, Secondary: #A855F7, Text: #F8FAFC
+val CheatLockLightPrimary = Color(0xFF2563EB)          // Royal Brand Blue
+val CheatLockLightPrimaryDark = Color(0xFF1D4ED8)      // Pressed / Active Blue
+val CheatLockLightPrimaryContainer = Color(0xFFEFF6FF) // 10% Blue highlight tint
+val CheatLockLightSecondary = Color(0xFF4F46E5)        // Refined Indigo Accent
+val CheatLockLightSecondaryContainer = Color(0xFFEEF2FF)
+
+val CheatLockLightTextPrimary = Color(0xFF0F172A)      // Deep Slate (High Contrast)
+val CheatLockLightText = CheatLockLightTextPrimary
+val CheatLockLightTextSecondary = Color(0xFF475569)    // Medium Slate
+val CheatLockLightTextMuted = Color(0xFF94A3B8)        // Light Slate helper
+
+val CheatLockLightSuccess = Color(0xFF10B981)
+val CheatLockLightSuccessContainer = Color(0xFFECFDF5)
+val CheatLockLightWarning = Color(0xFFF59E0B)
+val CheatLockLightWarningContainer = Color(0xFFFFFBEB)
+val CheatLockLightDanger = Color(0xFFEF4444)
+val CheatLockLightDangerContainer = Color(0xFFFEF2F2)
+val CheatLockLightInfo = Color(0xFF0284C7)
+val CheatLockLightInfoContainer = Color(0xFFF0F9FF)
+
+// DARK MODE: Background: #0F172A, Surface: #1E293B, Primary: #3B82F6, Secondary: #38BDF8, Text: #F8FAFC
 val CheatLockDarkBackgroundNew = Color(0xFF0F172A)
 val CheatLockDarkSurfaceNew = Color(0xFF1E293B)
 val CheatLockDarkPrimaryNew = Color(0xFF3B82F6)
-val CheatLockDarkSecondaryNew = Color(0xFFA855F7)
+val CheatLockDarkSecondaryNew = Color(0xFF38BDF8)
+val CheatLockDarkPrimaryContainerNew = Color(0xFF1E3A8A)
 val CheatLockDarkTextNew = Color(0xFFF8FAFC)

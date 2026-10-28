@@ -1,0 +1,11 @@
+<resources>
+    <string name="se_checkpoint_restoring">Checking saved answers…</string>
+    <string name="se_checkpoint_saving">Changes pending — saving to server…</string>
+    <string name="se_checkpoint_saved">Current answers confirmed by server</string>
+    <string name="se_checkpoint_failed">Save unconfirmed. Pending changes may be excluded at expiry.</string>
+    <string name="se_checkpoint_conflict">Newer answers exist on the server. Reload the exam to review them.</string>
+    <string name="se_checkpoint_expired">Time ended. Finalizing server-accepted answers.</string>
+    <string name="se_checkpoint_retry">Check and retry save</string>
+    <string name="se_checkpoint_policy">At expiry, only answers accepted by the server count.</string>
+    <string name="se_checkpoint_reload">Use server answers (discard unconfirmed changes)</string>
+</resources>

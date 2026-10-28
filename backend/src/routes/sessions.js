@@ -6,14 +6,13 @@ import { ExamSession } from "../models/ExamSession.js";
 import { User } from "../models/User.js";
 import { broadcastSessionState } from "../socket/proctoring.js";
 import { assertExamIsLive, getEffectiveExamStatus } from "./exams.js";
+import { findAdmittedStudentExam } from "../services/examAdmission.js";
 
 export const sessionsRouter = express.Router();
 
 sessionsRouter.get("/me", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    const exam = req.query?.examId
-      ? await Exam.findById(req.query.examId)
-      : await findStudentExam(req.user.identifier);
+    const exam = await findAdmittedStudentExam(req.user, req.query?.examId);
     const session = await getOrCreateSession(req.user.identifier, exam?._id);
     res.json({ session: serializeSession(session) });
   } catch (error) {
@@ -23,9 +22,7 @@ sessionsRouter.get("/me", requireAuth, requireRole("STUDENT"), async (req, res, 
 
 sessionsRouter.post("/start", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    const exam = req.body?.examId
-      ? await Exam.findById(req.body.examId)
-      : await findStudentExam(req.user.identifier);
+    const exam = await findAdmittedStudentExam(req.user, req.body?.examId);
     const user = await User.findOne({ identifier: req.user.identifier, role: "STUDENT" });
     assertExamIsLive(exam);
     const session = await getOrCreateSession(req.user.identifier, exam?._id);
@@ -40,7 +37,6 @@ sessionsRouter.post("/start", requireAuth, requireRole("STUDENT"), async (req, r
     if (
       session.status === "IN_PROGRESS" &&
       session.deviceId &&
-      deviceId &&
       session.deviceId !== deviceId
     ) {
       const error = new Error("This exam is already active on another device.");
@@ -48,23 +44,36 @@ sessionsRouter.post("/start", requireAuth, requireRole("STUDENT"), async (req, r
       throw error;
     }
 
-    session.status = "IN_PROGRESS";
-    session.examId = exam?._id;
-    session.studentName = user?.name || "";
-    session.onlineStatus = "ONLINE";
-    session.lastSeenAt = Date.now();
-    session.deviceId = deviceId || session.deviceId;
-    session.startedAt = Date.now();
-    session.submittedAt = undefined;
-    session.lockedAt = undefined;
-    session.resetAt = undefined;
-    session.lockReason = undefined;
-    await session.save();
+    const startedSession = await ExamSession.findOneAndUpdate(
+      {
+        _id: session._id,
+        studentId: req.user.identifier,
+        examId: exam._id,
+        status: session.status,
+        startedAt: session.startedAt ?? { $exists: false },
+        deviceId: session.deviceId ?? { $exists: false },
+      },
+      {
+        $set: {
+          status: "IN_PROGRESS",
+          studentName: user?.name || "",
+          onlineStatus: "ONLINE",
+          lastSeenAt: Date.now(),
+          deviceId: deviceId || session.deviceId || "",
+          startedAt: session.status === "IN_PROGRESS" ? session.startedAt : Date.now(),
+        },
+        $unset: { submittedAt: "", lockedAt: "", resetAt: "", lockReason: "" },
+      },
+      { new: true }
+    );
+    if (!startedSession) {
+      throw Object.assign(new Error("Session changed while starting. Refresh and retry."), { status: 409, code: "SESSION_START_CONFLICT" });
+    }
     if (exam) {
-      await broadcastSessionState(req.app.get("io"), "student_joined_exam", exam, session);
+      await broadcastSessionState(req.app.get("io"), "student_joined_exam", exam, startedSession);
     }
 
-    res.json({ session: serializeSession(session) });
+    res.json({ session: serializeSession(startedSession) });
   } catch (error) {
     next(error);
   }
@@ -72,45 +81,41 @@ sessionsRouter.post("/start", requireAuth, requireRole("STUDENT"), async (req, r
 
 sessionsRouter.post("/submit", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    const exam = req.body?.examId
-      ? await Exam.findById(req.body.examId)
-      : await findStudentExam(req.user.identifier);
+    const exam = await findAdmittedStudentExam(req.user, req.body?.examId);
     const session = await getOrCreateSession(req.user.identifier, exam?._id);
-    session.status = "SUBMITTED";
-    session.onlineStatus = "OFFLINE";
-    session.submittedAt = Date.now();
-    await session.save();
-    if (exam) {
-      await broadcastSessionState(req.app.get("io"), "student_left_exam", exam, session);
-    }
-    res.json({ session: serializeSession(session) });
-  } catch (error) {
+    assertSessionMutation(session, req.body);
+    if (session.status === "SUBMITTED") return res.json({ session: serializeSession(session) });
+    const updated = await ExamSession.findOneAndUpdate(
+      { _id: session._id, studentId: req.user.identifier, examId: exam._id, status: session.status, startedAt: session.startedAt },
+      { $set: { status: "SUBMITTED", onlineStatus: "OFFLINE", submittedAt: Date.now() } }, { new: true }
+    );
+    if (!updated) throw Object.assign(new Error("The exam attempt changed."), { status: 409, code: "STALE_EXAM_ATTEMPT" });
+    await broadcastSessionState(req.app.get("io"), "student_left_exam", exam, updated);
+    res.json({ session: serializeSession(updated) });  } catch (error) {
     next(error);
   }
 });
 
 sessionsRouter.post("/lock", requireAuth, requireRole("STUDENT"), async (req, res, next) => {
   try {
-    const exam = req.body?.examId
-      ? await Exam.findById(req.body.examId)
-      : await findStudentExam(req.user.identifier);
+    const exam = await findAdmittedStudentExam(req.user, req.body?.examId);
     const session = await getOrCreateSession(req.user.identifier, exam?._id);
+    assertSessionMutation(session, req.body, true);
+    if (session.status === "LOCKED") return res.json({ session: serializeSession(session) });
     const reportedScore = Number(req.body?.suspicionScore);
-    session.status = "LOCKED";
-    session.onlineStatus = "OFFLINE";
-    session.lockedAt = Date.now();
-    session.lockReason = req.body?.reason || "Too many warnings";
-    if (Number.isFinite(reportedScore)) {
-      session.suspicionScore = Math.max(session.suspicionScore || 0, clampScore(reportedScore));
-    }
-    session.latestAlert = session.lockReason;
-    await session.save();
-    if (exam) {
-      await broadcastSessionState(req.app.get("io"), "suspicion_score_updated", exam, session);
-      await broadcastSessionState(req.app.get("io"), "student_left_exam", exam, session);
-    }
-    res.json({ session: serializeSession(session) });
-  } catch (error) {
+    const updated = await ExamSession.findOneAndUpdate(
+      { _id: session._id, studentId: req.user.identifier, examId: exam._id, status: session.status, startedAt: session.startedAt },
+      { $set: {
+        status: "LOCKED", onlineStatus: "OFFLINE", lockedAt: Date.now(),
+        lockReason: req.body?.reason || "Too many warnings",
+        latestAlert: req.body?.reason || "Too many warnings",
+        suspicionScore: Number.isFinite(reportedScore) ? Math.max(session.suspicionScore || 0, clampScore(reportedScore)) : session.suspicionScore || 0,
+      } }, { new: true }
+    );
+    if (!updated) throw Object.assign(new Error("The exam attempt changed."), { status: 409, code: "STALE_EXAM_ATTEMPT" });
+    await broadcastSessionState(req.app.get("io"), "suspicion_score_updated", exam, updated);
+    await broadcastSessionState(req.app.get("io"), "student_left_exam", exam, updated);
+    res.json({ session: serializeSession(updated) });  } catch (error) {
     next(error);
   }
 });
@@ -258,6 +263,7 @@ sessionsRouter.post(
       session.lockedAt = undefined;
       session.lockReason = undefined;
       session.suspicionScore = 0;
+      session.scoreMutationIds = [];
       session.latestAlert = "Attempt reset by teacher";
       session.deviceId = "";
       session.previewUrl = "";
@@ -272,10 +278,6 @@ sessionsRouter.post(
     }
   }
 );
-
-async function findStudentExam(studentId) {
-  return Exam.findOne({ assignedStudents: studentId }).sort({ createdAt: -1 });
-}
 
 async function findTeacherExamIds(teacherId) {
   const exams = await Exam.find({ createdBy: teacherId }).select("_id").lean();
@@ -337,6 +339,7 @@ function serializeSession(session) {
     ...raw,
     id: raw._id?.toString?.() || raw.id,
     examId: raw.examId?.toString?.() || raw.examId || null,
+    serverTime: Date.now(),
     answerDraftRevision: raw.answerDraft?.revision || 0,
     answerDraftSavedAt: raw.answerDraft?.savedAt || null,
   };
@@ -397,4 +400,16 @@ function validateAnswerDraftPayload(body, questionCount) {
     currentIndex: body.currentIndex,
     markedQuestions,
   };
+}
+
+function assertSessionMutation(session, body = {}, allowLocked = false) {
+  if (!session || !["IN_PROGRESS", "SUBMITTED", ...(allowLocked ? ["LOCKED"] : [])].includes(session.status) || !(session.startedAt > 0)) {
+    throw Object.assign(new Error("The exam attempt is not active."), { status: 409, code: "SESSION_NOT_ACTIVE" });
+  }
+  if (body.attemptStartedAt != null && Number(body.attemptStartedAt) !== session.startedAt) {
+    throw Object.assign(new Error("The exam attempt changed."), { status: 409, code: "STALE_EXAM_ATTEMPT" });
+  }
+  if (body.deviceId != null && (!String(body.deviceId).trim() || (session.deviceId && session.deviceId !== String(body.deviceId).trim()))) {
+    throw Object.assign(new Error("This attempt belongs to another device."), { status: 409, code: "DEVICE_MISMATCH" });
+  }
 }

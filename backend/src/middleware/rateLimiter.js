@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import { logger } from "../services/logger.js";
 
@@ -62,6 +63,18 @@ export const loginRateLimiter = createRateLimiter("login", DEFAULT_LIMITS.login,
 export const signupRateLimiter = createRateLimiter("signup", DEFAULT_LIMITS.signup, accountAwareKey);
 export const passwordResetRateLimiter = createRateLimiter("password-reset", DEFAULT_LIMITS.passwordReset, accountAwareKey);
 export const accessCodeRateLimiter = createRateLimiter("access-code", DEFAULT_LIMITS.accessCode, accessCodeAwareKey);
+// Snapshot traffic is budgeted separately from login and ordinary API traffic.
+export const monitoringIngressLimiter = createRateLimiter("monitoring-ingress", { windowMs: 60_000, max: 12_000 });
+export const monitoringUserLimiter = createRateLimiter("monitoring-user", { windowMs: 60_000, max: 120 }, (req) => monitoringUserKey(req.user));
+
+function monitoringUserKey(user) {
+  if (user?.role !== "STUDENT") throw Object.assign(new Error("Student authentication required."), { status: 403 });
+  return createHash("sha256").update(String(user.sub || user.identifier)).digest("hex");
+}
+
+export async function consumeStudentMonitoringRateLimit(user) {
+  return consumeRateLimit(`monitoring-user:${monitoringUserKey(user)}`, { windowMs: 60_000, max: 120 });
+}
 
 export function createRateLimiter(group, policy, keyBuilder = ipOnlyKey) {
   return async function groupedRateLimiter(req, res, next) {
@@ -150,8 +163,8 @@ function accessCodeAwareKey(req) {
 }
 
 function ipOnlyKey(req) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return normalizeKeyPart(forwarded || req.ip || "unknown");
+  // Express resolves req.ip according to its explicitly configured trust proxy policy.
+  return normalizeKeyPart(req.ip || req.socket?.remoteAddress || "unknown");
 }
 
 function normalizeIdentifier(value) {

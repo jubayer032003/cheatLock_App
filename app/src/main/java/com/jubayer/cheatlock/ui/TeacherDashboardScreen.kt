@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Assignment
+import androidx.compose.material.icons.automirrored.filled.FactCheck
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -126,7 +129,7 @@ fun TeacherSideBarContent(
 ) {
     val items = listOf(
         TeacherTab.Dashboard to Icons.Default.Dashboard,
-        TeacherTab.Exams to Icons.Default.Assignment,
+        TeacherTab.Exams to Icons.AutoMirrored.Filled.Assignment,
         TeacherTab.Attendance to Icons.Default.People,
         TeacherTab.Reports to Icons.Default.Report,
         TeacherTab.Profile to Icons.Default.Person,
@@ -224,7 +227,7 @@ fun TeacherSideBarContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                imageVector = Icons.Default.Logout,
+                imageVector = Icons.AutoMirrored.Filled.Logout,
                 contentDescription = "Logout",
                 tint = DashboardDanger,
                 modifier = Modifier.size(22.dp)
@@ -505,8 +508,8 @@ private fun buildTeacherDashboardState(
     val uniqueStudents = buildSet {
         addAll(commList.map { it.lowercase().trim() }.filter { it.isNotBlank() })
         examList.forEach { exam ->
-            exam.assignedStudents?.forEach { add(it.lowercase().trim()) }
-            exam.communityStudents?.forEach { add(it.lowercase().trim()) }
+            exam.assignedStudents.forEach { add(it.lowercase().trim()) }
+            exam.communityStudents.forEach { add(it.lowercase().trim()) }
         }
         subList.forEach { add(it.studentId.lowercase().trim()) }
         sessList.forEach { add(it.studentId.lowercase().trim()) }
@@ -517,8 +520,8 @@ private fun buildTeacherDashboardState(
 
     val stats = listOf(
         DashboardStat("Students", uniqueStudents.size.toString(), "Registered", Icons.Default.Groups, DashboardAccent),
-        DashboardStat("Live Exams", activeExams.toString(), "Active", Icons.Default.Assignment, DashboardAccent),
-        DashboardStat("Security", "0", "Alerts", Icons.Default.FactCheck, DashboardWarning),
+        DashboardStat("Live Exams", activeExams.toString(), "Active", Icons.AutoMirrored.Filled.Assignment, DashboardAccent),
+        DashboardStat("Security", "0", "Alerts", Icons.AutoMirrored.Filled.FactCheck, DashboardWarning),
         DashboardStat("Sessions", sessList.size.toString(), "Active", Icons.Default.Dns, DashboardSuccess)
     )
 

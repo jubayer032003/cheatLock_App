@@ -39,8 +39,31 @@ export interface QuestionBankClass {
   id: string;
   name: string;
   slug: string;
+  icon?: string;
+  color?: string;
+  description?: string;
   displayOrder: number;
   isActive: boolean;
+}
+
+export interface ExamTreeNode {
+  id: string;
+  categoryId: string;
+  parentId?: string | null;
+  name: string;
+  slug: string;
+  type: "level" | "class" | "group" | "admission_type" | "unit" | "subject" | "chapter" | "topic";
+  icon?: string;
+  color?: string;
+  description?: string;
+  displayOrder: number;
+  isActive: boolean;
+  metadata?: Record<string, unknown>;
+  children?: ExamTreeNode[];
+}
+
+export interface ExamTreeCategory extends QuestionBankClass {
+  children: ExamTreeNode[];
 }
 
 export interface QuestionBankSubject {
@@ -72,6 +95,7 @@ export interface QuestionBankOption {
 
 export interface QuestionBankQuestion {
   id: string;
+  nodeId?: string;
   classId: string;
   subjectId: string;
   chapterId?: string | null;
@@ -268,6 +292,7 @@ export interface ExamAttendanceOverview {
 
 export interface LiveStudent {
   sessionId?: string;
+  attemptStartedAt?: number | null;
   studentId: string;
   studentName: string;
   rollId: string;

@@ -4,16 +4,23 @@ import { assignStudentsToExam, fetchClasses, fetchCommunity } from "../lib/api";
 import type { Exam, TeacherClass } from "../types";
 import { Badge, Card, cn } from "./ui";
 
+export type AssignmentRoster = {
+  communityStudents: string[];
+  classes: TeacherClass[];
+};
+
 type AssignStudentsToExamPanelProps = {
   exam: Exam;
   onExamUpdated: (exam: Exam) => void;
   className?: string;
+  roster?: AssignmentRoster;
 };
 
 export function AssignStudentsToExamPanel({
   exam,
   onExamUpdated,
   className,
+  roster,
 }: AssignStudentsToExamPanelProps) {
   const [studentInput, setStudentInput] = useState("");
   const [message, setMessage] = useState("");
@@ -26,23 +33,26 @@ export function AssignStudentsToExamPanel({
     exam.status === "LIVE" || exam.status === "SCHEDULED" || exam.status === "DRAFT";
 
   useEffect(() => {
+    if (roster || !canAssign || !exam.id) return;
+    let active = true;
     fetchCommunity()
-      .then((community) => setCommunityStudents(community.students || []))
-      .catch(() => setCommunityStudents([]));
+      .then((community) => { if (active) setCommunityStudents(community.students || []); })
+      .catch(() => { if (active) setCommunityStudents([]); });
     fetchClasses()
-      .then(setClasses)
-      .catch(() => setClasses([]));
-  }, []);
+      .then((items) => { if (active) setClasses(items); })
+      .catch(() => { if (active) setClasses([]); });
+    return () => { active = false; };
+  }, [roster, canAssign, exam.id]);
 
   const rosterCandidates = useMemo(() => {
     const assigned = new Set(exam.assignedStudents.map((student) => student.toLowerCase()));
     const candidates = new Set<string>();
-    communityStudents.forEach((student) => candidates.add(student.toLowerCase()));
-    classes.forEach((classRecord) => {
+    (roster?.communityStudents ?? communityStudents).forEach((student) => candidates.add(student.toLowerCase()));
+    (roster?.classes ?? classes).forEach((classRecord) => {
       classRecord.students.forEach((student) => candidates.add(student.toLowerCase()));
     });
     return [...candidates].filter((student) => student && !assigned.has(student)).sort();
-  }, [classes, communityStudents, exam.assignedStudents]);
+  }, [roster, classes, communityStudents, exam.assignedStudents]);
 
   async function handleAssign(studentIds: string[]) {
     if (!exam.id) return;

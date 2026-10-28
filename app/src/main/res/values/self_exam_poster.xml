@@ -1,0 +1,8 @@
+<resources>
+    <string name="se_examlab_title">CheatLock ExamLab</string>
+    <string name="se_poster_jahangirnagar">Jahangirnagar University</string>
+    <string name="se_poster_rajshahi">University of Rajshahi</string>
+    <string name="se_poster_buet">Bangladesh University of Engineering and Technology</string>
+    <string name="se_poster_description">Promotional poster for %1$s. %2$d of %3$d.</string>
+    <string name="se_poster_show">Show %1$s poster, %2$d of %3$d</string>
+</resources>

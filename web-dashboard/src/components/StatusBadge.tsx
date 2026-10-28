@@ -19,10 +19,10 @@ export function statusFromScore(score: number): StudentStatus {
   return "SAFE";
 }
 
-export function StatusBadge({ status }: { status: StudentStatus }) {
+export function StatusBadge({ status, scoreOnly = false }: { status: StudentStatus; scoreOnly?: boolean }) {
   return (
     <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${statusClasses[status]}`}>
-      {statusLabels[status]}
+      {scoreOnly && status === "SAFE" ? "Low score" : statusLabels[status]}
     </span>
   );
 }

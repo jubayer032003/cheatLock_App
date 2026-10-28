@@ -1,0 +1,8 @@
+<resources>
+    <string name="se_examlab_title">CheatLock ExamLab</string>
+    <string name="se_poster_jahangirnagar">জাহাঙ্গীরনগর বিশ্ববিদ্যালয়</string>
+    <string name="se_poster_rajshahi">রাজশাহী বিশ্ববিদ্যালয়</string>
+    <string name="se_poster_buet">বাংলাদেশ প্রকৌশল বিশ্ববিদ্যালয়</string>
+    <string name="se_poster_description">%1$s-এর প্রচারমূলক পোস্টার। %3$dটির মধ্যে %2$d।</string>
+    <string name="se_poster_show">%1$s-এর পোস্টার দেখুন, %3$dটির মধ্যে %2$d</string>
+</resources>

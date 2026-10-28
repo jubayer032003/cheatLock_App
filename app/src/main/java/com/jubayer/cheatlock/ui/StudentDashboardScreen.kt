@@ -1,4 +1,4 @@
-@file:Suppress("UNUSED_VALUE", "AssignedValueIsNeverRead")
+﻿@file:Suppress("UNUSED_VALUE", "AssignedValueIsNeverRead")
 
 package com.jubayer.cheatlock.ui
 
@@ -21,6 +21,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -32,9 +33,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,18 +54,74 @@ import com.jubayer.cheatlock.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
+import java.time.LocalTime
 
-private val StudentBgPrimary = Color(0xFF050A14)
-private val StudentBgSecondary = Color(0xFF07101F)
-private val StudentSurface = Color(0xFF09172A)
-private val StudentSurfaceRaised = Color(0xFF0C192C)
-private val StudentBlue = Color(0xFF087CFF)
-private val StudentBlueBright = Color(0xFF169BFF)
-private val StudentCyan = Color(0xFF16B8FF)
-private val StudentTextPrimary = Color(0xFFF5F8FF)
-private val StudentTextSecondary = Color(0xFF94A3B8)
-private val StudentTextMuted = Color(0xFF64748B)
-private val StudentBorder = Color(0xFF5078AA)
+private data class StudentPalette(
+    val bgPrimary: Color,
+    val bgSecondary: Color,
+    val surface: Color,
+    val surfaceRaised: Color,
+    val blue: Color,
+    val blueBright: Color,
+    val cyan: Color,
+    val textPrimary: Color,
+    val textSecondary: Color,
+    val textMuted: Color,
+    val border: Color
+)
+
+private val DarkStudentPalette = StudentPalette(
+    bgPrimary = Color(0xFF050A14),
+    bgSecondary = Color(0xFF07101F),
+    surface = Color(0xFF09172A),
+    surfaceRaised = Color(0xFF0C192C),
+    blue = Color(0xFF087CFF),
+    blueBright = Color(0xFF169BFF),
+    cyan = Color(0xFF16B8FF),
+    textPrimary = Color(0xFFF5F8FF),
+    textSecondary = Color(0xFF94A3B8),
+    textMuted = Color(0xFF64748B),
+    border = Color(0xFF5078AA)
+)
+
+private val LightStudentPalette = StudentPalette(
+    bgPrimary = Color(0xFFF6F8FC),
+    bgSecondary = Color(0xFFF1F5F9),
+    surface = Color(0xFFFFFFFF),
+    surfaceRaised = Color(0xFFFFFFFF),
+    blue = Color(0xFF2563EB),
+    blueBright = Color(0xFF1D4ED8),
+    cyan = Color(0xFF0284C7),
+    textPrimary = Color(0xFF0F172A),
+    textSecondary = Color(0xFF475569),
+    textMuted = Color(0xFF94A3B8),
+    border = Color(0xFFE2E8F0)
+)
+
+private val LocalStudentPalette = staticCompositionLocalOf { DarkStudentPalette }
+
+private val StudentBgPrimary: Color
+    @Composable get() = LocalStudentPalette.current.bgPrimary
+private val StudentBgSecondary: Color
+    @Composable get() = LocalStudentPalette.current.bgSecondary
+private val StudentSurface: Color
+    @Composable get() = LocalStudentPalette.current.surface
+private val StudentSurfaceRaised: Color
+    @Composable get() = LocalStudentPalette.current.surfaceRaised
+private val StudentBlue: Color
+    @Composable get() = LocalStudentPalette.current.blue
+private val StudentBlueBright: Color
+    @Composable get() = LocalStudentPalette.current.blueBright
+private val StudentCyan: Color
+    @Composable get() = LocalStudentPalette.current.cyan
+private val StudentTextPrimary: Color
+    @Composable get() = LocalStudentPalette.current.textPrimary
+private val StudentTextSecondary: Color
+    @Composable get() = LocalStudentPalette.current.textSecondary
+private val StudentTextMuted: Color
+    @Composable get() = LocalStudentPalette.current.textMuted
+private val StudentBorder: Color
+    @Composable get() = LocalStudentPalette.current.border
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,13 +139,19 @@ fun StudentDashboardScreen(
     onDeleteAccount: suspend (String) -> Unit,
     onRequestMonitoringPermissions: ((Boolean) -> Unit) -> Unit,
     onOpenAccountDeletionPage: () -> Unit,
+    appLanguage: AppLanguage = AppLanguage.English,
+    onLanguageChange: (AppLanguage) -> Unit = {},
+    appThemeMode: AppThemeMode = AppThemeMode.System,
+    onThemeModeChange: (AppThemeMode) -> Unit = {},
     externalMessage: String? = null,
-    recentNotifications: List<StudentNotification> = emptyList()
+    recentNotifications: List<StudentNotification> = emptyList(),
+    submissions: List<ExamSubmission> = emptyList()
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     val haptics = LocalHapticFeedback.current
+    var currentTab by remember { mutableStateOf(StudentNavDestination.HOME) }
     var examCode by remember { mutableStateOf("") }
     var classInviteCode by remember { mutableStateOf("") }
     var enrollmentStatus by remember { mutableStateOf<String?>(null) }
@@ -101,6 +166,8 @@ fun StudentDashboardScreen(
     var faceLoading by remember { mutableStateOf(false) }
     var showQrScanner by remember { mutableStateOf(false) }
     var showProfileManagement by remember { mutableStateOf(false) }
+    var showBiometricCalibration by remember { mutableStateOf(false) }
+    var forceFaceEnrollment by remember { mutableStateOf(false) }
     var showInstructions by remember { mutableStateOf(false) }
     var cameraActive by remember {
         mutableStateOf(
@@ -121,12 +188,17 @@ fun StudentDashboardScreen(
             if (faceDescriptor.isNotEmpty()) {
                 faceLoading = true
                 runCatching {
-                    if (onHasFaceProfile()) {
+                    if (forceFaceEnrollment) {
+                        onEnrollFace(faceDescriptor, faceSnapshot)
+                    } else if (onHasFaceProfile()) {
                         if (!onVerifyFace(faceDescriptor)) error("Biometric mismatch. Try again.")
                     } else {
                         onEnrollFace(faceDescriptor, faceSnapshot)
                     }
                     faceReady = true
+                    if (forceFaceEnrollment) {
+                        message = context.getString(R.string.biometric_profile_updated)
+                    }
                 }.onFailure { err ->
                     message = err.message
                     livenessViewModel.resetAll()
@@ -142,12 +214,17 @@ fun StudentDashboardScreen(
                 if (faceDescriptor.isNotEmpty()) {
                     faceLoading = true
                     runCatching {
-                        if (onHasFaceProfile()) {
+                        if (forceFaceEnrollment) {
+                            onEnrollFace(faceDescriptor, faceSnapshot)
+                        } else if (onHasFaceProfile()) {
                             if (!onVerifyFace(faceDescriptor)) error("Biometric mismatch. Try again.")
                         } else {
                             onEnrollFace(faceDescriptor, faceSnapshot)
                         }
                         faceReady = true
+                        if (forceFaceEnrollment) {
+                            message = context.getString(R.string.biometric_profile_updated)
+                        }
                     }.onFailure { err ->
                         message = err.message
                         livenessViewModel.resetAll()
@@ -196,215 +273,317 @@ fun StudentDashboardScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(StudentBgPrimary)) {
-        StudentDashboardBackground()
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 22.dp, vertical = 16.dp)
-                .verticalScroll(scrollState)
-                .imePadding(),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
-            StudentDashboardHeader(
-                accountName = account.name.ifBlank { account.identifier },
-                onProfileClick = { showProfileManagement = true }
-            )
+    val isDark = with(AppUiPreferences) { appThemeMode.isDarkTheme() }
+    val studentPalette = if (isDark) DarkStudentPalette else LightStudentPalette
 
-            if (showProfileManagement) {
-                ProfileManagementScreen(account, onUpdateProfile, onHasFaceProfile, onDeleteAccount, onOpenAccountDeletionPage)
-                StudentOutlinedButton(
-                    text = "Return to Dashboard",
-                    onClick = { showProfileManagement = false },
-                    leadingIcon = Icons.AutoMirrored.Filled.ArrowBack
-                )
-            } else {
-                if (recentNotifications.isNotEmpty()) {
-                    RecentAlertsCard(recentNotifications)
-                }
+    CompositionLocalProvider(LocalStudentPalette provides studentPalette) {
+        Box(modifier = Modifier.fillMaxSize().background(StudentBgPrimary)) {
+            StudentDashboardBackground()
 
-                StudentPanel(highlighted = true) {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            StudentIconBox(Icons.Default.EnhancedEncryption)
-                            Spacer(Modifier.width(14.dp))
-                            Column {
-                                Text("Join an Exam", color = StudentTextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
-                                Text(
-                                    "Enter the room code provided by your instructor.",
-                                    color = StudentTextSecondary,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            StudentTextField(
-                                modifier = Modifier.weight(1f),
-                                value = examCode,
-                                onValueChange = { examCode = it.uppercase() },
-                                label = "Enter room code",
-                                leadingIcon = Icons.Default.VpnKey
-                            )
-                            StudentOutlinedIconButton(
-                                onClick = { showQrScanner = true },
-                                icon = Icons.Default.QrCodeScanner,
-                                modifier = Modifier.width(68.dp)
-                            )
-                        }
-                        StudentPrimaryButton(
-                            text = if (isLoading) "Opening..." else "Join Exam",
-                            onClick = {
-                                if (examCode.isNotBlank()) {
-                                    isLoading = true
-                                    message = null
-                                    val parsedCode = parseExamCode(examCode)
-                                    scope.launch {
-                                        runCatching { onOpenExamByCode(parsedCode) }
-                                            .onSuccess {
-                                                selectedExam = it
-                                                showInstructions = true
-                                            }
-                                            .onFailure { message = it.message }
-                                        isLoading = false
-                                    }
-                                }
-                            },
-                            enabled = !isLoading,
-                            loading = isLoading,
-                            trailingIcon = Icons.AutoMirrored.Filled.ArrowForward
+            when (currentTab) {
+                StudentNavDestination.HOME -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .statusBarsPadding()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 22.dp, vertical = 16.dp)
+                            .verticalScroll(scrollState)
+                            .imePadding(),
+                        verticalArrangement = Arrangement.spacedBy(20.dp)
+                    ) {
+                        StudentDashboardHeader(
+                            accountName = account.name.ifBlank { account.identifier },
+                            appLanguage = appLanguage,
+                            onLanguageChange = onLanguageChange,
+                            appThemeMode = appThemeMode,
+                            onThemeModeChange = onThemeModeChange,
+                            onOpenProfile = { currentTab = StudentNavDestination.PROFILE },
+                            showHero = true
                         )
 
-                        (externalMessage ?: message)?.let {
-                            SuccessBanner(message = it, modifier = Modifier.padding(top = 2.dp))
+                        if (recentNotifications.isNotEmpty()) {
+                            RecentAlertsCard(recentNotifications)
                         }
-                    }
-                }
 
-                Text("Quick Actions", color = StudentTextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    StudentQuickActionCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        icon = Icons.Default.Quiz,
-                        title = "Self Exam",
-                        subtitle = "Practice MCQs and improve your understanding.",
-                        action = "Start Practice",
-                        onClick = onOpenSelfExam
-                    )
+                        SelfExamJourneyEntryCard(onOpenSelfExam = onOpenSelfExam)
 
-                    var classLoading by remember { mutableStateOf(false) }
-                    StudentPanel(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp)) {
-                        Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
-                            StudentIconBox(Icons.Default.Groups, size = 42.dp)
-                            Text("Class Registration", color = StudentTextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
-                            Text(
-                                "Join your class using the invite code from your teacher.",
-                                color = StudentTextSecondary,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            StudentTextField(
-                                value = classInviteCode,
-                                onValueChange = { classInviteCode = it.uppercase() },
-                                label = "Class invite code",
-                                leadingIcon = Icons.Default.GroupAdd
-                            )
+                        Text(stringResource(R.string.quick_actions), color = StudentTextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            // Join an Exam (Interchanged to Quick Actions Position)
+                            StudentPanel(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp)) {
+                                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        StudentIconBox(Icons.Default.EnhancedEncryption, size = 42.dp)
+                                        Spacer(Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                stringResource(R.string.join_an_exam),
+                                                color = StudentTextPrimary,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Black
+                                            )
+                                            Text(
+                                                stringResource(R.string.join_exam_supporting),
+                                                color = StudentTextSecondary,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        StudentTextField(
+                                            modifier = Modifier.weight(1f),
+                                            value = examCode,
+                                            onValueChange = { examCode = it.uppercase() },
+                                            label = stringResource(R.string.enter_room_code),
+                                            leadingIcon = Icons.Default.VpnKey
+                                        )
+                                        StudentOutlinedIconButton(
+                                            onClick = { showQrScanner = true },
+                                            icon = Icons.Default.QrCodeScanner,
+                                            modifier = Modifier.width(62.dp)
+                                        )
+                                    }
+                                    StudentPrimaryButton(
+                                        text = if (isLoading) stringResource(R.string.opening) else stringResource(R.string.join_exam),
+                                        onClick = {
+                                            if (examCode.isNotBlank()) {
+                                                isLoading = true
+                                                message = null
+                                                val parsedCode = parseExamCode(examCode)
+                                                scope.launch {
+                                                    runCatching { onOpenExamByCode(parsedCode) }
+                                                        .onSuccess {
+                                                            selectedExam = it
+                                                            showInstructions = true
+                                                        }
+                                                        .onFailure { message = it.message }
+                                                    isLoading = false
+                                                }
+                                            }
+                                        },
+                                        enabled = !isLoading,
+                                        loading = isLoading,
+                                        trailingIcon = Icons.AutoMirrored.Filled.ArrowForward
+                                    )
 
-                            enrollmentStatus?.let { status ->
-                                when (status) {
-                                    "PENDING" -> StudentStatusPanel(CheatLockWarning, Icons.Default.Pending, "Waiting for teacher approval")
-                                    "APPROVED" -> StudentStatusPanel(CheatLockSuccess, Icons.Default.Verified, "You are now a member of this class")
-                                    "REJECTED" -> StudentStatusPanel(CheatLockDanger, Icons.Default.Error, "Your request was rejected")
+                                    (externalMessage ?: message)?.let {
+                                        SuccessBanner(message = it, modifier = Modifier.padding(top = 2.dp))
+                                    }
                                 }
                             }
 
-                            StudentPrimaryButton(
-                                text = if (classLoading) "Requesting..." else "Join Class",
-                                onClick = {
-                                    if (classInviteCode.isNotBlank()) {
-                                        classLoading = true
-                                        message = null
-                                        enrollmentStatus = null
-                                        scope.launch {
-                                            runCatching { onJoinClass(classInviteCode.trim()) }
-                                                .onSuccess { status ->
-                                                    enrollmentStatus = status
-                                                    if (status == "PENDING") {
-                                                        message = "Join request submitted successfully."
-                                                    }
-                                                }
-                                                .onFailure { message = it.message }
-                                            classLoading = false
+                            var classLoading by remember { mutableStateOf(false) }
+                            StudentPanel(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp)) {
+                                Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
+                                    StudentIconBox(Icons.Default.Groups, size = 42.dp)
+                                    Text(stringResource(R.string.class_registration), color = StudentTextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+                                    Text(
+                                        stringResource(R.string.class_registration_supporting),
+                                        color = StudentTextSecondary,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    StudentTextField(
+                                        value = classInviteCode,
+                                        onValueChange = { classInviteCode = it.uppercase() },
+                                        label = stringResource(R.string.class_invite_code),
+                                        leadingIcon = Icons.Default.GroupAdd
+                                    )
+
+                                    enrollmentStatus?.let { status ->
+                                        when (status) {
+                                            "PENDING" -> StudentStatusPanel(CheatLockWarning, Icons.Default.Pending, stringResource(R.string.waiting_teacher_approval))
+                                            "APPROVED" -> StudentStatusPanel(CheatLockSuccess, Icons.Default.Verified, stringResource(R.string.class_joined))
+                                            "REJECTED" -> StudentStatusPanel(CheatLockDanger, Icons.Default.Error, stringResource(R.string.request_rejected))
                                         }
                                     }
+
+                                    StudentPrimaryButton(
+                                        text = if (classLoading) stringResource(R.string.requesting) else stringResource(R.string.join_class),
+                                        onClick = {
+                                            if (classInviteCode.isNotBlank()) {
+                                                classLoading = true
+                                                message = null
+                                                enrollmentStatus = null
+                                                scope.launch {
+                                                    runCatching { onJoinClass(classInviteCode.trim()) }
+                                                        .onSuccess { status ->
+                                                            enrollmentStatus = status
+                                                            if (status == "PENDING") {
+                                                                message = context.getString(R.string.join_request_submitted)
+                                                            }
+                                                        }
+                                                        .onFailure { message = it.message }
+                                                    classLoading = false
+                                                }
+                                            }
+                                        },
+                                        enabled = !classLoading,
+                                        loading = classLoading,
+                                        leadingIcon = Icons.Default.Verified
+                                    )
+                                }
+                            }
+                        }
+
+                        StudentSecurityCard()
+
+                        selectedExam?.let { exam ->
+                            ExamSummaryCard(exam)
+                            FaceVerificationCard(
+                                cameraActive = cameraActive,
+                                faceStatus = faceStatus,
+                                faceLoading = faceLoading,
+                                faceReady = faceReady,
+                                livenessState = livenessState,
+                                onFaceStatusChanged = { faceStatus = it },
+                                onPreviewSnapshot = { faceSnapshot = it },
+                                onFaceDescriptorChanged = { faceDescriptor = it },
+                                onFaceDetected = { face ->
+                                    livenessViewModel.onFaceFrameReceived(face)
                                 },
-                                enabled = !classLoading,
-                                loading = classLoading,
-                                leadingIcon = Icons.Default.Verified
+                                onCameraError = { message = it },
+                                onCameraActiveChanged = { cameraActive = it },
+                                onRequestCameraPermission = { callback -> onRequestMonitoringPermissions(callback) },
+                                onStartLiveness = {
+                                    livenessViewModel.startChallenge()
+                                }
+                            )
+                            StudentPrimaryButton(
+                                text = if (isStartingSession) stringResource(R.string.initializing) else stringResource(R.string.start_secure_session),
+                                onClick = {
+                                    if (!isStartingSession) {
+                                        pendingExamStart = exam
+                                        showScreenDisclosure = true
+                                    }
+                                },
+                                enabled = isExamLive && faceReady && !isStartingSession,
+                                loading = isStartingSession,
+                                leadingIcon = Icons.Default.Lock
                             )
                         }
+
+                        StudentOutlinedButton(
+                            text = stringResource(R.string.logout),
+                            onClick = onLogout,
+                            danger = true,
+                            leadingIcon = Icons.AutoMirrored.Filled.Logout
+                        )
+
+                        // Floating bottom navigation spacing
+                        Spacer(Modifier.height(84.dp))
                     }
                 }
 
-                StudentSecurityCard()
-
-                selectedExam?.let { exam ->
-                    ExamSummaryCard(exam)
-                    FaceVerificationCard(
-                        cameraActive = cameraActive,
-                        faceStatus = faceStatus,
-                        faceLoading = faceLoading,
-                        faceReady = faceReady,
-                        livenessState = livenessState,
-                        onFaceStatusChanged = { faceStatus = it },
-                        onPreviewSnapshot = { faceSnapshot = it },
-                        onFaceDescriptorChanged = { faceDescriptor = it },
-                        onFaceDetected = { face ->
-                            livenessViewModel.onFaceFrameReceived(face)
-                        },
-                        onCameraError = { message = it },
-                        onCameraActiveChanged = { cameraActive = it },
-                        onRequestCameraPermission = { callback -> onRequestMonitoringPermissions(callback) },
-                        onStartLiveness = {
-                            livenessViewModel.startChallenge()
-                        }
-                    )
-                    StudentPrimaryButton(
-                        text = if (isStartingSession) "Initializing..." else "Start Secure Session",
-                        onClick = {
-                            if (!isStartingSession) {
-                                pendingExamStart = exam
-                                showScreenDisclosure = true
-                            }
-                        },
-                        enabled = isExamLive && faceReady && !isStartingSession,
-                        loading = isStartingSession,
-                        leadingIcon = Icons.Default.Lock
-                    )
+                StudentNavDestination.PRACTICE -> {
+                    // Instantly launch practice setup
+                    LaunchedEffect(Unit) {
+                        onOpenSelfExam()
+                        currentTab = StudentNavDestination.HOME
+                    }
                 }
 
-                StudentOutlinedButton(
-                    text = "Manage Authorized Profile",
-                    onClick = { showProfileManagement = true },
-                    leadingIcon = Icons.Default.AccountCircle
-                )
+                StudentNavDestination.RESULTS -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .statusBarsPadding()
+                            .navigationBarsPadding()
+                            .imePadding()
+                    ) {
+                        Box(modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp)) {
+                            StudentDashboardHeader(
+                                accountName = account.name.ifBlank { account.identifier },
+                                appLanguage = appLanguage,
+                                onLanguageChange = onLanguageChange,
+                                appThemeMode = appThemeMode,
+                                onThemeModeChange = onThemeModeChange,
+                                onOpenProfile = { currentTab = StudentNavDestination.PROFILE }
+                            )
+                        }
+
+                        StudentResultsScreen(
+                            submissions = submissions,
+                            studentName = account.name.ifBlank { account.identifier },
+                            onPracticeAgain = { onOpenSelfExam() }
+                        )
+                    }
+                }
+
+                StudentNavDestination.PROFILE -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .statusBarsPadding()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 22.dp, vertical = 16.dp)
+                            .verticalScroll(rememberScrollState())
+                            .imePadding(),
+                        verticalArrangement = Arrangement.spacedBy(20.dp)
+                    ) {
+                        StudentDashboardHeader(
+                            accountName = account.name.ifBlank { account.identifier },
+                            appLanguage = appLanguage,
+                            onLanguageChange = onLanguageChange,
+                            appThemeMode = appThemeMode,
+                            onThemeModeChange = onThemeModeChange,
+                            onOpenProfile = {}
+                        )
+
+                        ProfileManagementScreen(
+                            account = account,
+                            onUpdateProfile = onUpdateProfile,
+                            onHasFaceProfile = onHasFaceProfile,
+                            onDeleteAccount = onDeleteAccount,
+                            onOpenAccountDeletionPage = onOpenAccountDeletionPage,
+                            submissions = submissions,
+                            appLanguage = appLanguage,
+                            onLanguageChange = onLanguageChange,
+                            appThemeMode = appThemeMode,
+                            onThemeModeChange = onThemeModeChange,
+                            onOpenBiometricCalibration = {
+                                forceFaceEnrollment = true
+                                faceReady = false
+                                faceDescriptor = emptyList()
+                                faceSnapshot = ""
+                                livenessViewModel.resetAll()
+                                showBiometricCalibration = true
+                            }
+                        )
+
+                        StudentOutlinedButton(
+                            text = stringResource(R.string.logout),
+                            onClick = onLogout,
+                            danger = true,
+                            leadingIcon = Icons.AutoMirrored.Filled.Logout
+                        )
+
+                        // Floating bottom navigation spacing
+                        Spacer(Modifier.height(84.dp))
+                    }
+                }
             }
 
-            StudentOutlinedButton(
-                text = "Logout",
-                onClick = onLogout,
-                danger = true,
-                leadingIcon = Icons.AutoMirrored.Filled.Logout
+            // World-Class Floating Bottom Navigation Bar
+            CheatLockBottomNavigation(
+                selectedDestination = currentTab,
+                onDestinationSelected = { destination ->
+                    if (destination == StudentNavDestination.PRACTICE) {
+                        onOpenSelfExam()
+                    } else {
+                        currentTab = destination
+                    }
+                },
+                modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
-    }
 
     if (showQrScanner) {
         BasicAlertDialog(onDismissRequest = { showQrScanner = false }) {
@@ -417,7 +596,7 @@ fun StudentDashboardScreen(
                     modifier = Modifier.padding(24.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text("Scanner", style = MaterialTheme.typography.headlineSmall)
+                    Text(stringResource(R.string.scan_exam_key), style = MaterialTheme.typography.headlineSmall)
                 Box(Modifier.fillMaxWidth().height(260.dp).clip(RoundedCornerShape(24.dp)).background(Color.Black)) {
                     QrCodeScannerView(
                         modifier = Modifier.fillMaxSize(),
@@ -430,7 +609,7 @@ fun StudentDashboardScreen(
                     DigitalScannerOverlay()
                 }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = { showQrScanner = false }) { Text("Close") }
+                        TextButton(onClick = { showQrScanner = false }) { Text(stringResource(R.string.close)) }
                     }
                 }
             }
@@ -444,7 +623,7 @@ fun StudentDashboardScreen(
                 onRequestMonitoringPermissions { granted ->
                     cameraActive = granted
                     if (!granted) {
-                        message = "Camera permission was denied. Allow camera access and retry biometric verification."
+                        message = context.getString(R.string.camera_permission_denied_retry)
                     }
                 }
                 scope.launch {
@@ -471,10 +650,8 @@ fun StudentDashboardScreen(
                     modifier = Modifier.padding(24.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text("Screen monitoring during this exam", style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        "After you continue, Android will ask for screen-capture permission. During the proctored exam, CheatLock captures periodic screen images to identify suspicious activity and uploads them over HTTPS to the CheatLock service, where authorized instructors or proctors can review them. Capture begins only after Android permission and stops when the exam or monitoring service ends. A visible notification is shown while capture is active."
-                    )
+                    Text(stringResource(R.string.screen_monitoring_title), style = MaterialTheme.typography.headlineSmall)
+                    Text(stringResource(R.string.screen_monitoring_body))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End
@@ -482,7 +659,7 @@ fun StudentDashboardScreen(
                         TextButton(onClick = {
                             showScreenDisclosure = false
                             pendingExamStart = null
-                        }) { Text("Not now") }
+                        }) { Text(stringResource(R.string.not_now)) }
                         TextButton(onClick = {
                             val exam = pendingExamStart ?: return@TextButton
                             showScreenDisclosure = false
@@ -497,57 +674,394 @@ fun StudentDashboardScreen(
                                         isStartingSession = false
                                     }
                             }
-                        }) { Text("Continue to Android permission") }
+                        }) { Text(stringResource(R.string.continue_android_permission)) }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showProfileManagement) {
+        BasicAlertDialog(
+            onDismissRequest = { showProfileManagement = false }
+        ) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            stringResource(R.string.manage_authorized_profile),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        IconButton(onClick = { showProfileManagement = false }) {
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close))
+                        }
+                    }
+                    ProfileManagementScreen(
+                        account = account,
+                        onUpdateProfile = onUpdateProfile,
+                        onHasFaceProfile = onHasFaceProfile,
+                        onDeleteAccount = onDeleteAccount,
+                        onOpenAccountDeletionPage = onOpenAccountDeletionPage,
+                        submissions = submissions,
+                        appLanguage = appLanguage,
+                        onLanguageChange = onLanguageChange,
+                        appThemeMode = appThemeMode,
+                        onThemeModeChange = onThemeModeChange,
+                        onOpenBiometricCalibration = {
+                            forceFaceEnrollment = true
+                            faceReady = false
+                            faceDescriptor = emptyList()
+                            faceSnapshot = ""
+                            livenessViewModel.resetAll()
+                            showBiometricCalibration = true
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    if (showBiometricCalibration) {
+        BasicAlertDialog(
+            onDismissRequest = {
+                showBiometricCalibration = false
+                forceFaceEnrollment = false
+                livenessViewModel.resetAll()
+            }
+        ) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                tonalElevation = 6.dp,
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            stringResource(R.string.recalibrate_biometric_face_id),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        IconButton(onClick = {
+                            showBiometricCalibration = false
+                            forceFaceEnrollment = false
+                            livenessViewModel.resetAll()
+                        }) {
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close))
+                        }
+                    }
+
+                    FaceVerificationCard(
+                        cameraActive = cameraActive,
+                        faceStatus = faceStatus,
+                        faceLoading = faceLoading,
+                        faceReady = faceReady,
+                        livenessState = livenessState,
+                        onFaceStatusChanged = { faceStatus = it },
+                        onPreviewSnapshot = { faceSnapshot = it },
+                        onFaceDescriptorChanged = { faceDescriptor = it },
+                        onFaceDetected = { face -> livenessViewModel.onFaceFrameReceived(face) },
+                        onCameraError = { message = it },
+                        onCameraActiveChanged = { cameraActive = it },
+                        onRequestCameraPermission = { callback -> onRequestMonitoringPermissions(callback) },
+                        onStartLiveness = { livenessViewModel.startChallenge() }
+                    )
+
+                    Button(
+                        onClick = {
+                            showBiometricCalibration = false
+                            forceFaceEnrollment = false
+                            livenessViewModel.resetAll()
+                        },
+                        enabled = faceReady,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.done))
                     }
                 }
             }
         }
     }
 }
+}
 
 @Composable
 private fun StudentDashboardBackground() {
-    Canvas(modifier = Modifier.fillMaxSize()) {
-        drawRect(
-            Brush.verticalGradient(
-                colors = listOf(StudentBgPrimary, StudentBgSecondary, StudentBgPrimary),
-                startY = 0f,
-                endY = size.height
-            )
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(StudentBlue.copy(alpha = 0.24f), Color.Transparent),
-                center = Offset(size.width * 0.48f, size.height * 0.28f),
-                radius = size.width * 0.68f
-            ),
-            radius = size.width * 0.68f,
-            center = Offset(size.width * 0.48f, size.height * 0.28f)
-        )
-        val ringCenter = Offset(size.width * 0.48f, size.height * 0.24f)
-        repeat(4) { index ->
-            drawCircle(
-                color = StudentBlue.copy(alpha = 0.08f - index * 0.012f),
-                radius = size.width * (0.28f + index * 0.09f),
-                center = ringCenter,
-                style = Stroke(width = 1.1.dp.toPx())
-            )
-        }
-        val dotColor = StudentBlue.copy(alpha = 0.28f)
-        for (row in 0..9) {
-            for (col in 0..7) {
-                drawCircle(
-                    color = dotColor.copy(alpha = 0.05f + ((row + col) % 3) * 0.035f),
-                    radius = 1.15.dp.toPx(),
-                    center = Offset(size.width * 0.68f + col * 18.dp.toPx(), size.height * 0.13f + row * 18.dp.toPx())
+    val palette = LocalStudentPalette.current
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        palette.bgPrimary,
+                        palette.bgSecondary,
+                        palette.bgPrimary
+                    )
                 )
-            }
+            )
+    )
+}
+
+@Composable
+private fun StudentHeroSection(
+    accountName: String,
+    appLanguage: AppLanguage,
+    isDark: Boolean,
+    onOpenProfile: () -> Unit
+) {
+    var currentHour by remember { mutableIntStateOf(LocalTime.now().hour) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000)
+            currentHour = LocalTime.now().hour
+        }
+    }
+
+    val greeting = remember(currentHour, appLanguage) { timeBasedGreeting(currentHour, appLanguage) }
+    val heroTitle = if (appLanguage == AppLanguage.Bengali) {
+        "প্রতিদিন পরীক্ষা,\nসাফল্যের প্রস্তুতি।"
+    } else {
+        "Daily exams,\nready for success."
+    }
+    val heroSubtitle = if (appLanguage == AppLanguage.Bengali) {
+        "নিরাপদ পরিবেশে আত্মবিশ্বাসের সাথে আপনার পরীক্ষা দিন।"
+    } else {
+        "Take every exam with confidence in a secure environment."
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 430.dp
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = if (compact) 190.dp else 230.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StudentHeroText(
+                greeting = greeting,
+                accountName = accountName,
+                heroTitle = heroTitle,
+                heroSubtitle = heroSubtitle,
+                onOpenProfile = onOpenProfile,
+                compact = compact,
+                modifier = Modifier
+                    .weight(0.52f)
+                    .fillMaxHeight()
+            )
+            StudentHeroArtwork(
+                isDark = isDark,
+                compact = compact,
+                modifier = Modifier
+                    .weight(0.48f)
+                    .fillMaxHeight()
+            )
         }
     }
 }
 
 @Composable
-private fun StudentDashboardHeader(accountName: String, onProfileClick: () -> Unit) {
+private fun StudentHeroText(
+    greeting: String,
+    accountName: String,
+    heroTitle: String,
+    heroSubtitle: String,
+    onOpenProfile: () -> Unit,
+    compact: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = "$greeting, $accountName",
+            color = StudentTextSecondary,
+            style = if (compact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+        Spacer(Modifier.height(if (compact) 4.dp else 9.dp))
+        Text(
+            text = heroTitle,
+            color = StudentTextPrimary,
+            style = MaterialTheme.typography.displaySmall.copy(
+                fontSize = if (compact) 24.sp else 36.sp,
+                lineHeight = if (compact) 30.sp else 42.sp
+            ),
+            fontWeight = FontWeight.Black,
+        )
+        Spacer(Modifier.height(if (compact) 6.dp else 9.dp))
+        Text(
+            text = heroSubtitle,
+            color = StudentTextSecondary,
+            style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.titleMedium,
+            maxLines = if (compact) 2 else Int.MAX_VALUE
+        )
+        Spacer(Modifier.height(if (compact) 8.dp else 10.dp))
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .border(1.dp, StudentBlue.copy(alpha = 0.8f), RoundedCornerShape(999.dp))
+                .background(StudentBlue.copy(alpha = 0.08f))
+                .clickable { onOpenProfile() }
+                .padding(horizontal = if (compact) 9.dp else 13.dp, vertical = if (compact) 5.dp else 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp)
+        ) {
+            Icon(Icons.Default.GppGood, null, tint = StudentBlue, modifier = Modifier.size(if (compact) 15.dp else 18.dp))
+            Text(
+                stringResource(R.string.authorized_student),
+                color = StudentBlueBright,
+                style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun StudentHeroArtwork(
+    isDark: Boolean,
+    compact: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val logoRes = if (isDark) R.drawable.cheatlock_logo else R.drawable.cheatlock_logo_light
+    Box(
+        modifier = modifier
+            .aspectRatio(if (compact) 0.86f else 1.08f),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = logoRes),
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxSize(if (compact) 0.88f else 0.78f)
+                .align(Alignment.CenterEnd)
+                .alpha(if (isDark) 0.11f else 0.13f),
+            contentScale = ContentScale.Fit
+        )
+        Image(
+            painter = painterResource(id = R.drawable.cheatlock_hero),
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxSize(if (compact) 1f else 0.9f)
+                .align(Alignment.BottomCenter),
+            contentScale = ContentScale.Fit
+        )
+        StudentHeroBubble(
+            icon = Icons.Default.Mic,
+            size = if (compact) 32.dp else 46.dp,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(x = if (compact) (-34).dp else (-54).dp, y = if (compact) 10.dp else 14.dp)
+        )
+        StudentHeroBubble(
+            icon = Icons.Default.QrCodeScanner,
+            size = if (compact) 32.dp else 46.dp,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(x = if (compact) 8.dp else 4.dp, y = if (compact) 2.dp else 4.dp)
+        )
+        StudentHeroBubble(
+            icon = Icons.Default.PhotoCamera,
+            size = if (compact) 32.dp else 46.dp,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(x = if (compact) 50.dp else 62.dp, y = if (compact) 12.dp else 18.dp)
+        )
+    }
+}
+
+@Composable
+private fun StudentHeroBubble(
+    icon: ImageVector,
+    size: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.size(size),
+        shape = CircleShape,
+        color = StudentSurface.copy(alpha = 0.94f),
+        border = BorderStroke(1.dp, StudentBorder.copy(alpha = 0.62f)),
+        tonalElevation = 3.dp,
+        shadowElevation = 3.dp
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = StudentBlue, modifier = Modifier.size(size * 0.5f))
+        }
+    }
+}
+
+private fun timeBasedGreeting(hour: Int, language: AppLanguage): String {
+    val bucket = when (hour) {
+        in 5..10 -> "morning"
+        in 11..12 -> "noon"
+        in 13..16 -> "afternoon"
+        in 17..20 -> "evening"
+        else -> "night"
+    }
+    return if (language == AppLanguage.Bengali) {
+        when (bucket) {
+            "morning" -> "শুভ সকাল"
+            "noon" -> "শুভ দুপুর"
+            "afternoon" -> "শুভ বিকাল"
+            "evening" -> "শুভ সন্ধ্যা"
+            else -> "শুভ রাত্রি"
+        }
+    } else {
+        when (bucket) {
+            "morning" -> "Good morning"
+            "noon" -> "Good noon"
+            "afternoon" -> "Good afternoon"
+            "evening" -> "Good evening"
+            else -> "Good night"
+        }
+    }
+}
+
+@Composable
+private fun StudentDashboardHeader(
+    accountName: String,
+    appLanguage: AppLanguage,
+    onLanguageChange: (AppLanguage) -> Unit,
+    appThemeMode: AppThemeMode,
+    onThemeModeChange: (AppThemeMode) -> Unit,
+    onOpenProfile: () -> Unit = {},
+    showHero: Boolean = false
+) {
+    val isDark = with(AppUiPreferences) { appThemeMode.isDarkTheme() }
+    val logoRes = if (isDark) R.drawable.cheatlock_logo else R.drawable.cheatlock_logo_light
+
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -556,8 +1070,8 @@ private fun StudentDashboardHeader(accountName: String, onProfileClick: () -> Un
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(
-                    painter = painterResource(id = R.drawable.cheatlock_logo),
-                    contentDescription = "CheatLock logo",
+                    painter = painterResource(id = logoRes),
+                    contentDescription = stringResource(R.string.cheatlock_logo),
                     modifier = Modifier.size(42.dp)
                 )
                 Spacer(Modifier.width(10.dp))
@@ -576,46 +1090,135 @@ private fun StudentDashboardHeader(accountName: String, onProfileClick: () -> Un
                     )
                 }
             }
-            Surface(
-                onClick = onProfileClick,
-                shape = RoundedCornerShape(12.dp),
-                color = StudentSurface.copy(alpha = 0.82f),
-                border = BorderStroke(1.dp, StudentBorder.copy(alpha = 0.62f))
+
+            // Icon-based Language & Light/Dark Mode controls right after logo / title header
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                // Dual Pill Language Selector [ BN | EN ]
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = StudentSurface.copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, StudentBorder.copy(alpha = 0.5f))
                 ) {
-                    Icon(Icons.Default.School, null, tint = StudentBlue, modifier = Modifier.size(22.dp))
-                    Text("Student", color = StudentTextPrimary, fontWeight = FontWeight.Bold)
-                    Icon(Icons.Default.KeyboardArrowDown, null, tint = StudentTextSecondary, modifier = Modifier.size(20.dp))
+                    Row(
+                        modifier = Modifier.padding(3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val isBn = appLanguage == AppLanguage.Bengali
+
+                        // BN Option
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (isBn) StudentBlue else Color.Transparent)
+                                .clickable {
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "========== BN CLICKED ==========")
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "Language BEFORE = $appLanguage")
+                                    onLanguageChange(AppLanguage.Bengali)
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "Language AFTER = ${AppLanguage.Bengali}")
+                                }
+                                .padding(horizontal = 9.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "BN",
+                                color = if (isBn) Color.White else StudentTextSecondary,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // EN Option
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (!isBn) StudentBlue else Color.Transparent)
+                                .clickable {
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "========== EN CLICKED ==========")
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "Language BEFORE = $appLanguage")
+                                    onLanguageChange(AppLanguage.English)
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "Language AFTER = ${AppLanguage.English}")
+                                }
+                                .padding(horizontal = 9.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "EN",
+                                color = if (!isBn) Color.White else StudentTextSecondary,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // Dual Pill Theme Selector [ ☀️ | 🌙 ]
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = StudentSurface.copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, StudentBorder.copy(alpha = 0.5f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Light Mode Option
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (!isDark) StudentBlue else Color.Transparent)
+                                .clickable {
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "========== LIGHT CLICKED ==========")
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "Theme BEFORE = $appThemeMode")
+                                    onThemeModeChange(AppThemeMode.Light)
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "Theme AFTER = ${AppThemeMode.Light}")
+                                }
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.WbSunny,
+                                contentDescription = "Light Mode",
+                                tint = if (!isDark) Color.White else StudentTextSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        // Dark Mode Option
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (isDark) StudentBlue else Color.Transparent)
+                                .clickable {
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "========== DARK CLICKED ==========")
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "Theme BEFORE = $appThemeMode")
+                                    onThemeModeChange(AppThemeMode.Dark)
+                                    android.util.Log.e("CHEATLOCK_BUTTON_DEBUG", "Theme AFTER = ${AppThemeMode.Dark}")
+                                }
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.NightsStay,
+                                contentDescription = "Dark Mode",
+                                tint = if (isDark) Color.White else StudentTextSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            Text("Good morning,", color = StudentTextSecondary, style = MaterialTheme.typography.titleMedium)
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text("Student ", color = StudentTextPrimary, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Black)
-                Text("Dashboard", color = StudentBlue, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Black)
-            }
-            Text("Ready for your next exam?", color = StudentTextSecondary, style = MaterialTheme.typography.titleMedium)
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .border(1.dp, StudentBlue.copy(alpha = 0.8f), RoundedCornerShape(999.dp))
-                    .background(StudentBlue.copy(alpha = 0.08f))
-                    .padding(horizontal = 13.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(Icons.Default.GppGood, null, tint = StudentBlue, modifier = Modifier.size(18.dp))
-                Text("Authorized Student", color = StudentBlueBright, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-            }
-            if (accountName.isNotBlank()) {
-                Text(accountName, color = StudentTextMuted, style = MaterialTheme.typography.labelSmall)
-            }
+        if (showHero) {
+            StudentHeroSection(
+                accountName = accountName,
+                appLanguage = appLanguage,
+                isDark = isDark,
+                onOpenProfile = onOpenProfile
+            )
         }
     }
 }
@@ -627,18 +1230,28 @@ private fun StudentPanel(
     contentPadding: PaddingValues = PaddingValues(18.dp),
     content: @Composable () -> Unit
 ) {
-    val borderColor = if (highlighted) StudentBlue.copy(alpha = 0.72f) else StudentBorder.copy(alpha = 0.42f)
+    val palette = LocalStudentPalette.current
+    val isLight = palette == LightStudentPalette
+    val borderColor = if (isLight) {
+        if (highlighted) palette.blue.copy(alpha = 0.5f) else palette.border
+    } else {
+        if (highlighted) StudentBlue.copy(alpha = 0.72f) else StudentBorder.copy(alpha = 0.42f)
+    }
+    val bg = if (isLight) {
+        Brush.verticalGradient(listOf(Color.White, Color.White))
+    } else {
+        Brush.linearGradient(
+            listOf(
+                StudentSurfaceRaised.copy(alpha = 0.92f),
+                StudentSurface.copy(alpha = 0.82f)
+            )
+        )
+    }
+
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(18.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        StudentSurfaceRaised.copy(alpha = 0.92f),
-                        StudentSurface.copy(alpha = 0.82f)
-                    )
-                )
-            )
+            .background(bg)
             .border(1.dp, borderColor, RoundedCornerShape(18.dp))
             .padding(contentPadding)
     ) {
@@ -648,15 +1261,73 @@ private fun StudentPanel(
 
 @Composable
 private fun StudentIconBox(icon: ImageVector, size: androidx.compose.ui.unit.Dp = 50.dp) {
+    val palette = LocalStudentPalette.current
+    val isLight = palette == LightStudentPalette
+    val iconBg = if (isLight) {
+        Brush.linearGradient(listOf(palette.blue, palette.blueBright))
+    } else {
+        Brush.linearGradient(listOf(StudentBlue.copy(alpha = 0.98f), Color(0xFF0755FF)))
+    }
+    val iconBorder = if (isLight) palette.blue.copy(alpha = 0.3f) else StudentCyan.copy(alpha = 0.45f)
+
     Box(
         modifier = Modifier
             .size(size)
             .clip(RoundedCornerShape(12.dp))
-            .background(Brush.linearGradient(listOf(StudentBlue.copy(alpha = 0.98f), Color(0xFF0755FF))))
-            .border(1.dp, StudentCyan.copy(alpha = 0.45f), RoundedCornerShape(12.dp)),
+            .background(iconBg)
+            .border(1.dp, iconBorder, RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, null, tint = StudentTextPrimary, modifier = Modifier.size(size * 0.54f))
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(size * 0.54f))
+    }
+}
+
+@Composable
+private fun SelfExamJourneyEntryCard(onOpenSelfExam: () -> Unit) {
+    SelfExamUniversityPosterCard(onOpenSelfExam = onOpenSelfExam,
+        fallback = { SelfExamJourneyEntryCardFallback(onOpenSelfExam) })
+}
+
+@Composable
+private fun SelfExamJourneyEntryCardFallback(onOpenSelfExam: () -> Unit) {
+    SelfExamCard {
+        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Surface(shape = SelfExamDesign.controlShape, color = SelfExamDesign.inset) {
+                    Icon(Icons.Default.Science, null, tint = SelfExamDesign.accent, modifier = Modifier.padding(14.dp).size(24.dp))
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    SelfExamLabTitle(examLabColor = SelfExamDesign.accent)
+                    Text(stringResource(R.string.se_choose_a_topic_set_your_practice_and_begin), color = SelfExamDesign.secondaryText,
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            Text(stringResource(R.string.se_track_subject_chapter_start), color = SelfExamDesign.accent,
+                style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(R.string.se_practice_from_your_question_bank_one_step_at_a_time),
+                color = SelfExamDesign.secondaryText, style = MaterialTheme.typography.bodyMedium)
+            SelfExamPrimaryButton(text = stringResource(R.string.start_practice), onClick = onOpenSelfExam,
+                leadingIcon = Icons.Default.PlayArrow)
+        }
+    }
+}
+
+@Composable
+private fun SelfExamEntryStep(
+    number: String,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(StudentBgSecondary.copy(alpha = 0.58f))
+            .border(1.dp, StudentBorder.copy(alpha = 0.24f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(number, color = StudentBlueBright, fontWeight = FontWeight.Black, fontSize = 13.sp)
+        Text(label, color = StudentTextSecondary, fontWeight = FontWeight.Bold, fontSize = 10.sp)
     }
 }
 
@@ -668,6 +1339,9 @@ private fun StudentTextField(
     leadingIcon: ImageVector,
     modifier: Modifier = Modifier
 ) {
+    val palette = LocalStudentPalette.current
+    val isLight = palette == LightStudentPalette
+
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
@@ -678,9 +1352,9 @@ private fun StudentTextField(
         shape = RoundedCornerShape(14.dp),
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = StudentBlue,
-            unfocusedBorderColor = StudentBorder.copy(alpha = 0.48f),
-            focusedContainerColor = StudentBgSecondary.copy(alpha = 0.64f),
-            unfocusedContainerColor = StudentBgSecondary.copy(alpha = 0.48f),
+            unfocusedBorderColor = if (isLight) palette.border else StudentBorder.copy(alpha = 0.48f),
+            focusedContainerColor = if (isLight) Color.White else StudentBgSecondary.copy(alpha = 0.64f),
+            unfocusedContainerColor = if (isLight) Color.White else StudentBgSecondary.copy(alpha = 0.48f),
             cursorColor = StudentCyan,
             focusedTextColor = StudentTextPrimary,
             unfocusedTextColor = StudentTextPrimary
@@ -698,6 +1372,14 @@ private fun StudentPrimaryButton(
     leadingIcon: ImageVector? = null,
     trailingIcon: ImageVector? = null
 ) {
+    val palette = LocalStudentPalette.current
+    val isLight = palette == LightStudentPalette
+    val buttonBg = if (isLight) {
+        Brush.linearGradient(listOf(Color(0xFF2563EB), Color(0xFF1D4ED8)))
+    } else {
+        Brush.linearGradient(listOf(Color(0xFF075CFF), StudentBlueBright, StudentCyan))
+    }
+
     Button(
         onClick = onClick,
         enabled = enabled,
@@ -709,11 +1391,11 @@ private fun StudentPrimaryButton(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Brush.linearGradient(listOf(Color(0xFF075CFF), StudentBlueBright, StudentCyan))),
+                .background(buttonBg),
             contentAlignment = Alignment.Center
         ) {
             if (loading) {
-                CircularProgressIndicator(modifier = Modifier.size(22.dp), color = StudentTextPrimary, strokeWidth = 2.dp)
+                CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
             } else {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp),
@@ -721,13 +1403,13 @@ private fun StudentPrimaryButton(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     leadingIcon?.let {
-                        Icon(it, null, tint = StudentTextPrimary, modifier = Modifier.size(22.dp))
+                        Icon(it, null, tint = Color.White, modifier = Modifier.size(22.dp))
                         Spacer(Modifier.width(10.dp))
                     }
-                    Text(text, color = StudentTextPrimary, fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleMedium)
+                    Text(text, color = Color.White, fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleMedium)
                     trailingIcon?.let {
                         Spacer(Modifier.weight(1f))
-                        Icon(it, null, tint = StudentTextPrimary, modifier = Modifier.size(28.dp))
+                        Icon(it, null, tint = Color.White, modifier = Modifier.size(28.dp))
                     }
                 }
             }
@@ -743,19 +1425,24 @@ private fun StudentOutlinedButton(
     leadingIcon: ImageVector? = null,
     danger: Boolean = false
 ) {
-    val accent = if (danger) CheatLockDanger else StudentBlue
+    val palette = LocalStudentPalette.current
+    val isLight = palette == LightStudentPalette
+    val accent = if (danger) CheatLockDanger else palette.blue
+    val textColor = if (danger) CheatLockDanger else (if (isLight) palette.blue else palette.blueBright)
+    val buttonBg = if (isLight) Color.White else StudentSurface.copy(alpha = 0.35f)
+
     OutlinedButton(
         onClick = onClick,
         modifier = modifier.fillMaxWidth().height(54.dp),
         shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.76f)),
-        colors = ButtonDefaults.outlinedButtonColors(containerColor = StudentSurface.copy(alpha = 0.35f))
+        border = BorderStroke(1.dp, accent.copy(alpha = if (isLight) 0.6f else 0.76f)),
+        colors = ButtonDefaults.outlinedButtonColors(containerColor = buttonBg)
     ) {
         leadingIcon?.let {
             Icon(it, null, tint = accent, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(10.dp))
         }
-        Text(text, color = if (danger) CheatLockDanger else StudentBlueBright, fontWeight = FontWeight.Bold)
+        Text(text, color = textColor, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -765,15 +1452,20 @@ private fun StudentOutlinedIconButton(
     icon: ImageVector,
     modifier: Modifier = Modifier
 ) {
+    val palette = LocalStudentPalette.current
+    val isLight = palette == LightStudentPalette
+    val buttonBg = if (isLight) Color.White else StudentSurface.copy(alpha = 0.35f)
+    val iconColor = if (isLight) palette.blue else palette.blueBright
+
     OutlinedButton(
         onClick = onClick,
         modifier = modifier.height(58.dp),
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, StudentBlue.copy(alpha = 0.76f)),
-        colors = ButtonDefaults.outlinedButtonColors(containerColor = StudentSurface.copy(alpha = 0.35f)),
+        border = BorderStroke(1.dp, palette.blue.copy(alpha = if (isLight) 0.5f else 0.76f)),
+        colors = ButtonDefaults.outlinedButtonColors(containerColor = buttonBg),
         contentPadding = PaddingValues(0.dp)
     ) {
-        Icon(icon, null, tint = StudentBlueBright, modifier = Modifier.size(26.dp))
+        Icon(icon, null, tint = iconColor, modifier = Modifier.size(26.dp))
     }
 }
 
@@ -815,8 +1507,8 @@ private fun StudentSecurityCard() {
                 Icon(Icons.Default.AdminPanelSettings, null, tint = StudentBlueBright, modifier = Modifier.size(38.dp))
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("Your exam security is our priority", color = StudentTextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
-                Text("We ensure a fair, secure and trustworthy exam experience.", color = StudentTextSecondary, style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.security_priority_title), color = StudentTextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+                Text(stringResource(R.string.security_priority_body), color = StudentTextSecondary, style = MaterialTheme.typography.bodyMedium)
             }
             Icon(Icons.Default.ChevronRight, null, tint = StudentTextSecondary)
         }
@@ -868,13 +1560,13 @@ private fun PremiumInstructionDialog(onAgree: () -> Unit) {
                         }
                         Spacer(Modifier.height(16.dp))
                         Text(
-                            "Security Protocol",
+                            stringResource(R.string.security_protocol),
                             style = MaterialTheme.typography.headlineSmall,
                             color = Color.White,
                             fontWeight = FontWeight.Black
                         )
                         Text(
-                            "Please review the integrity guidelines",
+                            stringResource(R.string.integrity_guidelines),
                             style = MaterialTheme.typography.labelMedium,
                             color = CheatLockTextSecondaryDark
                         )
@@ -882,30 +1574,30 @@ private fun PremiumInstructionDialog(onAgree: () -> Unit) {
 
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         InstructionSection(
-                            title = "PRE-EXAM CHECKLIST",
+                            title = stringResource(R.string.pre_exam_checklist),
                             items = listOf(
-                                "Ensure a stable internet connection.",
-                                "Find a quiet, well-lit private environment.",
-                                "Close all background applications/tabs.",
-                                "Position yourself in front of the camera."
+                                stringResource(R.string.instruction_stable_internet),
+                                stringResource(R.string.instruction_quiet_environment),
+                                stringResource(R.string.instruction_close_apps),
+                                stringResource(R.string.instruction_camera_position)
                             ),
                             icon = Icons.AutoMirrored.Filled.FactCheck
                         )
 
                         InstructionSection(
-                            title = "CAMERA AND MICROPHONE MONITORING",
+                            title = stringResource(R.string.camera_microphone_monitoring),
                             items = listOf(
-                                "During a proctored exam, the camera checks identity, face presence, and visible objects. Periodic face-camera evidence images may be uploaded over HTTPS for authorized instructors or proctors to review.",
-                                "Microphone input is processed in memory for voice-activity detection during the exam. The current implementation does not intentionally store or transmit raw audio.",
-                                "Monitoring starts only after you continue and grant Android permissions. It stops when the exam monitoring ends.",
-                                "If required access is denied, identity verification or the proctored exam may be unavailable."
+                                stringResource(R.string.instruction_camera_monitoring),
+                                stringResource(R.string.instruction_microphone_monitoring),
+                                stringResource(R.string.instruction_monitoring_starts),
+                                stringResource(R.string.instruction_permission_denial)
                             ),
                             icon = Icons.Default.Gavel
                         )
                     }
 
                     GradientPrimaryButton(
-                        text = "CONTINUE TO ANDROID PERMISSIONS",
+                        text = stringResource(R.string.continue_to_android_permissions),
                         onClick = onAgree,
                         leadingIcon = Icons.Default.Verified
                     )
@@ -940,7 +1632,7 @@ private fun ExamSummaryCard(exam: Exam) {
             Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.weight(1f)) {
                     Text(exam.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text("${exam.durationMinutes} mins", style = MaterialTheme.typography.bodySmall, color = CheatLockTextSecondaryDark)
+                    Text(stringResource(R.string.minutes_short, exam.durationMinutes), style = MaterialTheme.typography.bodySmall, color = CheatLockTextSecondaryDark)
                 }
                 StatusPill(exam.status.name, if (exam.status == ExamStatus.LIVE) CheatLockSuccess else CheatLockWarning)
             }
@@ -972,7 +1664,7 @@ private fun FaceVerificationCard(
 
     PremiumCard {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Biometric Verification", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White)
+            Text(stringResource(R.string.biometric_verification), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White)
             Box(Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(16.dp)).background(Color.Black)) {
                 // Key the camera to the verify state to prevent unbinding
                 if (cameraActive) {
@@ -986,18 +1678,19 @@ private fun FaceVerificationCard(
                         )
                     }
                 } else {
+                    val context = LocalContext.current
                     Column(
                         modifier = Modifier.fillMaxSize().padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Text("Camera access is required for biometric verification.", color = Color.White)
+                        Text(stringResource(R.string.camera_access_biometric), color = Color.White)
                         TextButton(onClick = {
                             onRequestCameraPermission { granted ->
                                 onCameraActiveChanged(granted)
-                                if (!granted) onCameraError("Camera permission remains denied.")
+                                if (!granted) onCameraError(context.getString(R.string.camera_permission_remains_denied))
                             }
-                        }) { Text("Retry camera permission") }
+                        }) { Text(stringResource(R.string.retry_camera_permission)) }
                     }
                 }
                 
@@ -1021,13 +1714,13 @@ private fun FaceVerificationCard(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Step ${livenessState.currentActionIndex + 1}/${livenessState.actions.size}",
+                                text = stringResource(R.string.step_count, livenessState.currentActionIndex + 1, livenessState.actions.size),
                                 color = CheatLockPurpleSoft,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
                             )
                             Text(
-                                text = "${livenessState.timeLeftSeconds}s remaining",
+                                text = stringResource(R.string.seconds_remaining, livenessState.timeLeftSeconds),
                                 color = if (livenessState.timeLeftSeconds <= 3) CheatLockDanger else Color.White,
                                 fontWeight = FontWeight.Black,
                                 fontSize = 14.sp
@@ -1092,13 +1785,13 @@ private fun FaceVerificationCard(
                     ) {
                         Icon(Icons.Default.Refresh, null, tint = CheatLockWarning, modifier = Modifier.size(48.dp))
                         Spacer(Modifier.height(12.dp))
-                        Text("CHALLENGE FAILED", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text(stringResource(R.string.challenge_failed), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                         Spacer(Modifier.height(6.dp))
                         Text(
                             text = if (livenessState.cooldownSeconds > 0) 
-                                "Retry available in ${livenessState.cooldownSeconds}s" 
+                                stringResource(R.string.retry_available_seconds, livenessState.cooldownSeconds)
                             else 
-                                "Tap below to start Attempt 2",
+                                stringResource(R.string.tap_start_attempt_two),
                             color = CheatLockTextSecondaryDark,
                             fontSize = 13.sp
                         )
@@ -1117,10 +1810,10 @@ private fun FaceVerificationCard(
                     ) {
                         Icon(Icons.Default.Lock, null, tint = CheatLockDanger, modifier = Modifier.size(48.dp))
                         Spacer(Modifier.height(12.dp))
-                        Text("AUTHENTICATION DENIED", color = CheatLockDanger, fontWeight = FontWeight.Black, fontSize = 16.sp)
+                        Text(stringResource(R.string.authentication_denied), color = CheatLockDanger, fontWeight = FontWeight.Black, fontSize = 16.sp)
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            text = "Liveness verification failed both attempts.",
+                            text = stringResource(R.string.liveness_failed_both),
                             color = CheatLockTextSecondaryDark,
                             fontSize = 13.sp
                         )
@@ -1139,7 +1832,7 @@ private fun FaceVerificationCard(
                     ) {
                         Icon(Icons.Default.CheckCircle, null, tint = CheatLockSuccess, modifier = Modifier.size(48.dp))
                         Spacer(Modifier.height(12.dp))
-                        Text("LIVENESS VERIFIED", color = CheatLockSuccess, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text(stringResource(R.string.liveness_verified), color = CheatLockSuccess, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     }
                 }
             }
@@ -1157,11 +1850,11 @@ private fun FaceVerificationCard(
                 if (faceLoading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
                 else Text(
                     text = when (livenessState.status) {
-                        LivenessStatus.Idle -> "VERIFY IDENTITY"
-                        LivenessStatus.InProgress -> "VERIFYING LIVENESS..."
-                        LivenessStatus.Success -> "IDENTITY VERIFIED"
-                        LivenessStatus.FailedRetry -> if (livenessState.cooldownSeconds > 0) "COOLDOWN..." else "RETRY VERIFICATION"
-                        LivenessStatus.FailedFinal -> "ACCESS DENIED"
+                        LivenessStatus.Idle -> stringResource(R.string.verify_identity)
+                        LivenessStatus.InProgress -> stringResource(R.string.verifying_liveness)
+                        LivenessStatus.Success -> stringResource(R.string.identity_verified)
+                        LivenessStatus.FailedRetry -> if (livenessState.cooldownSeconds > 0) stringResource(R.string.cooldown) else stringResource(R.string.retry_verification)
+                        LivenessStatus.FailedFinal -> stringResource(R.string.access_denied)
                     }
                 )
             }
@@ -1176,7 +1869,7 @@ private fun RecentAlertsCard(notifications: List<StudentNotification>) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.NotificationsActive, null, tint = CheatLockDanger, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Security Alerts", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(stringResource(R.string.security_alerts), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color.White)
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 notifications.take(3).forEach { notification ->
@@ -1191,7 +1884,7 @@ private fun RecentAlertsCard(notifications: List<StudentNotification>) {
                         Box(Modifier.size(6.6.dp).clip(CircleShape).background(CheatLockDanger))
                         Spacer(Modifier.width(10.dp))
                         Column {
-                            val alertMsg = notification.payload.message ?: notification.payload.title ?: "Exam violation recorded."
+                            val alertMsg = notification.payload.message ?: notification.payload.title ?: stringResource(R.string.exam_violation_recorded)
                             Text(alertMsg, style = MaterialTheme.typography.bodySmall, color = Color.White)
                             Text(notification.type.replace("_", " ").uppercase(), style = MaterialTheme.typography.labelSmall, color = CheatLockTextTertiaryDark)
                         }

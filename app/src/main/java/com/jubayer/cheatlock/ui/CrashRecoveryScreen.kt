@@ -16,6 +16,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.res.stringResource
+import com.jubayer.cheatlock.R
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jubayer.cheatlock.ui.theme.CheatLockDanger
@@ -23,7 +25,7 @@ import com.jubayer.cheatlock.ui.theme.CheatLockTextSecondaryDark
 
 @Composable
 fun CrashRecoveryScreen(
-    errorDetails: String,
+    supportCode: String,
     onRetry: () -> Unit
 ) {
     PremiumScreen(modifier = Modifier.fillMaxSize()) {
@@ -53,14 +55,14 @@ fun CrashRecoveryScreen(
             }
 
             Text(
-                text = "System Recovery Control",
+                text = stringResource(R.string.exam_recovery_title),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Black,
                 color = Color.White
             )
 
             Text(
-                text = "CheatLock has intercepted an unexpected failure. Diagnostic telemetry is shown below. You can relaunch to continue your exam.",
+                text = stringResource(R.string.exam_recovery_summary),
                 style = MaterialTheme.typography.bodyMedium,
                 color = CheatLockTextSecondaryDark,
                 lineHeight = 20.sp
@@ -78,7 +80,7 @@ fun CrashRecoveryScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "DIAGNOSTIC REPORT",
+                        text = stringResource(R.string.exam_recovery_help_title),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = CheatLockDanger
@@ -100,7 +102,7 @@ fun CrashRecoveryScreen(
                                 .verticalScroll(rememberScrollState())
                         ) {
                             Text(
-                                text = errorDetails,
+                                text = stringResource(R.string.exam_recovery_help),
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
@@ -113,9 +115,15 @@ fun CrashRecoveryScreen(
                 }
             }
 
+            Text(
+                text = stringResource(R.string.exam_recovery_support_code, supportCode),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
             // Retry button
             GradientPrimaryButton(
-                text = "RELAUNCH SESSION",
+                text = stringResource(R.string.exam_recovery_reopen),
                 onClick = onRetry,
                 leadingIcon = Icons.Default.Refresh,
                 modifier = Modifier.fillMaxWidth().height(56.dp)

@@ -1,0 +1,11 @@
+<resources>
+    <string name="se_checkpoint_restoring">সার্ভারে সংরক্ষিত উত্তর যাচাই হচ্ছে…</string>
+    <string name="se_checkpoint_saving">পরিবর্তন অপেক্ষমাণ — সার্ভারে সংরক্ষণ হচ্ছে…</string>
+    <string name="se_checkpoint_saved">বর্তমান উত্তরগুলো সার্ভার নিশ্চিত করেছে</string>
+    <string name="se_checkpoint_failed">সংরক্ষণ নিশ্চিত হয়নি। সময় শেষে অপেক্ষমাণ পরিবর্তন বাদ পড়তে পারে।</string>
+    <string name="se_checkpoint_conflict">সার্ভারে নতুন উত্তর আছে। দেখতে পরীক্ষা পুনরায় খুলুন।</string>
+    <string name="se_checkpoint_expired">সময় শেষ। সার্ভারে গৃহীত উত্তর চূড়ান্ত হচ্ছে।</string>
+    <string name="se_checkpoint_retry">যাচাই করে আবার সংরক্ষণ করুন</string>
+    <string name="se_checkpoint_policy">সময় শেষে শুধু সার্ভারে গৃহীত উত্তর গণনা হবে।</string>
+    <string name="se_checkpoint_reload">সার্ভারের উত্তর নিন (অনিশ্চিত পরিবর্তন বাদ দিন)</string>
+</resources>

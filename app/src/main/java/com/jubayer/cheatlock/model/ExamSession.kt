@@ -25,5 +25,7 @@ data class ExamSession(
     val onlineStatus: String = "OFFLINE",
     val previewUrl: String = "",
     val previewBase64: String = "",
-    val lastSeenAt: Long? = null
+    val lastSeenAt: Long? = null,
+    val serverTime: Long? = null,
+    @Transient val timingAnchorElapsedRealtime: Long? = null
 )

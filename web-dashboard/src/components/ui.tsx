@@ -132,6 +132,27 @@ export function IconButton({ className, ...props }: ButtonHTMLAttributes<HTMLBut
   return <button className={cn("icon-button", className)} type="button" {...props} />;
 }
 
+export function Button({
+  variant = "primary",
+  size = "md",
+  className,
+  children,
+  ...props
+}: {
+  variant?: "primary" | "secondary" | "danger";
+  size?: "sm" | "md";
+  className?: string;
+  children: ReactNode;
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
+  const baseClass = variant === "secondary" ? "secondary-button" : "primary-button";
+  const sizeClass = size === "sm" ? "!py-1 !px-2.5 !text-xs" : "";
+  return (
+    <button className={cn(baseClass, sizeClass, className)} type="button" {...props}>
+      {children}
+    </button>
+  );
+}
+
 export function Dialog({
   open,
   onClose,

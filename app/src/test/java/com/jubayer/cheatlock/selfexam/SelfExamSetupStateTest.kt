@@ -48,4 +48,26 @@ class SelfExamSetupStateTest {
         assertFalse(SelfExamSetupSelection(classId = "class-a", subjectId = "subject-a", questionCount = 0).canStart())
         assertFalse(SelfExamSetupSelection(classId = "class-a", subjectId = "subject-a", difficultyMode = "expert").canStart())
     }
+
+    @Test
+    fun questionCountAndDifficultyUpdateDuration() {
+        val easy = SelfExamSetupSelection(difficultyMode = "easy")
+            .withQuestionCount(20)
+        assertTrue(easy.durationMinutes == 10)
+
+        val medium = easy.withDifficultyMode("medium")
+        assertTrue(medium.durationMinutes == 15)
+
+        val hard = medium.withDifficultyMode("hard")
+        assertTrue(hard.durationMinutes == 20)
+    }
+
+    @Test
+    fun mixedDifficultyUsesFixedFormat() {
+        val mixed = SelfExamSetupSelection(difficultyMode = "hard", questionCount = 20, durationMinutes = 20)
+            .withDifficultyMode("mixed")
+
+        assertTrue(mixed.questionCount == 100)
+        assertTrue(mixed.durationMinutes == 60)
+    }
 }

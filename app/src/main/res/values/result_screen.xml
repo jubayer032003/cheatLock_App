@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="result_detected_signals">Detected during exam</string>
+    <string name="result_risk_score">Risk score</string>
+    <string name="result_risk_hint">Higher scores indicate more suspicious activity. Signals alone do not confirm misconduct.</string>
+    <string name="result_student_id">Student ID</string>
+    <string name="result_out_of_100">/ 100</string>
+    <string name="result_percentage">%1$s%%</string>
+    <string name="result_grade_description">Official assessment: %1$s out of 100</string>
+    <string name="result_risk_description">Risk score: %1$d out of 100. %2$s.</string>
+</resources>

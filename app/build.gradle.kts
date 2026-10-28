@@ -52,6 +52,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "CHEATLOCK_API_BASE_URL", "\"https://cheatlock-backend.onrender.com/\"")
         buildConfigField("Boolean", "ENABLE_RUNTIME_TRACING", "false")
+        buildConfigField("Boolean", "SELF_EXAM_BULK_V1", (providers.gradleProperty("cheatlock.selfExamBulkV1").orNull == "true").toString())
+        buildConfigField("Boolean", "SELF_EXAM_CHECKPOINT_V1", (providers.gradleProperty("cheatlock.selfExamCheckpointV1").orNull == "true").toString())
         buildConfigField("String", "PRIVACY_POLICY_URL", "\"${configuredPublicUrl("cheatlock.privacyPolicyUrl")}\"")
         buildConfigField("String", "TERMS_URL", "\"${configuredPublicUrl("cheatlock.termsUrl")}\"")
         buildConfigField("String", "ACCOUNT_DELETION_URL", "\"${configuredPublicUrl("cheatlock.accountDeletionUrl")}\"")
@@ -133,4 +135,16 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
     androidTestImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:core:1.5.0")
+}
+
+tasks.register("unitTestClasses") {
+    group = "build"
+    description = "Compiles unit test classes for Android Studio compatibility."
+    dependsOn("compileDebugUnitTestSources")
+}
+
+tasks.register("androidTestClasses") {
+    group = "build"
+    description = "Compiles Android instrumented test classes for Android Studio compatibility."
+    dependsOn("compileDebugAndroidTestSources")
 }

@@ -4,12 +4,19 @@ import android.annotation.SuppressLint
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
+import android.graphics.Matrix
+import android.graphics.Rect
+import android.graphics.YuvImage
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -27,6 +34,7 @@ import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.jubayer.cheatlock.proctoring.FaceEmbeddingModel
 import com.jubayer.cheatlock.proctoring.DetectedObject
 import com.jubayer.cheatlock.proctoring.YOLOv8Detector
+import com.jubayer.cheatlock.proctoring.CameraSensorHealth
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,6 +46,7 @@ import com.jubayer.cheatlock.BuildConfig
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "CameraPreview"
 
@@ -59,7 +68,9 @@ fun CameraPreview(
     onFaceDetected: (Face) -> Unit = {},
     onObjectsDetected: (List<DetectedObject>) -> Unit = {},
     onPhoneDetectedWithLabels: (String) -> Unit = {},
-    onCameraError: (String) -> Unit = {}
+    onCameraError: (String) -> Unit = {},
+    separateSensorFailures: Boolean = false,
+    onSensorHealthChanged: (CameraSensorHealth) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -79,57 +90,48 @@ fun CameraPreview(
                         scaleType = PreviewView.ScaleType.FILL_CENTER
                     }
 
+                val mainHandler = Handler(Looper.getMainLooper())
+                var released = false
+                var lastHealth: CameraSensorHealth? = null
+                fun postStatus(status: FaceStatus) {
+                    mainHandler.post { if (!released) onFaceStatusChanged(status) }
+                }
+                fun reportHealth(health: CameraSensorHealth) {
+                    if (released || health == lastHealth) return
+                    lastHealth = health
+                    mainHandler.post { if (!released) onSensorHealthChanged(health) }
+                }
+                fun reportFailure(health: CameraSensorHealth, legacyStatus: FaceStatus? = FaceStatus.NO_FACE) {
+                    reportHealth(health)
+                    if (separateSensorFailures) postStatus(FaceStatus.CHECKING)
+                    else legacyStatus?.let(::postStatus)
+                }
+
                 val permissionGranted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
                 biometricTrace("BIOMETRIC_CAMERA_PERMISSION", "granted=$permissionGranted lifecycle=${lifecycleOwner.lifecycle.currentState}")
                 if (!permissionGranted) {
+                    reportFailure(CameraSensorHealth.PERMISSION_DENIED, null)
                     onCameraError("Camera permission is required for biometric verification.")
                     return@factory previewView
                 }
 
                 val faceEmbeddingModel = FaceEmbeddingModel(ctx.applicationContext)
-                val mainHandler = Handler(Looper.getMainLooper())
                 val cleanupCallbacks = mutableListOf<() -> Unit>()
-                var released = false
+                var lastSnapshotAt = 0L
+                val snapshotEncoding = AtomicBoolean(false)
 
-                fun postStatus(status: FaceStatus) {
-                    mainHandler.post { onFaceStatusChanged(status) }
-                }
-
+                reportHealth(CameraSensorHealth.STARTING)
                 postStatus(FaceStatus.CHECKING)
 
                 releaseActions[previewView] = {
                     released = true
+                    if (separateSensorFailures) onSensorHealthChanged(CameraSensorHealth.STOPPED)
                     cleanupCallbacks.asReversed().forEach { cleanup ->
                         runCatching { cleanup() }
                     }
                 }
                 biometricTrace("BIOMETRIC_PREVIEW_READY", "surfaceProviderPrepared=true")
 
-                val snapshotTask = object : Runnable {
-                    override fun run() {
-                        val bitmap = previewView.bitmap
-                        if (bitmap != null) {
-                            Thread {
-                                try {
-                                    val dataUrl = bitmap.toSmallJpegDataUrl()
-                                    val descriptor = faceEmbeddingModel.embed(bitmap)
-
-                                    mainHandler.post {
-                                        onPreviewSnapshot(dataUrl)
-                                        descriptor?.let(onFaceDescriptorChanged)
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Snapshot processing failed", e)
-                                } finally {
-                                    // Always recycle the bitmap, even on error paths
-                                    runCatching { bitmap.recycle() }
-                                }
-                            }.start()
-                        }
-                        mainHandler.postDelayed(this, 2000)
-                    }
-                }
-                mainHandler.postDelayed(snapshotTask, if (preferFastStartup) 400L else 1500L)
                 cleanupCallbacks += {
                     mainHandler.removeCallbacksAndMessages(null)
                     faceEmbeddingModel.close()
@@ -150,7 +152,7 @@ fun CameraPreview(
                         biometricTrace("BIOMETRIC_FRONT_CAMERA_AVAILABLE", "available=$frontAvailable")
                         if (!frontAvailable) {
                             onCameraError("No front camera is available for biometric verification.")
-                            postStatus(FaceStatus.NO_FACE)
+                            reportFailure(CameraSensorHealth.CAMERA_INITIALIZATION_FAILED)
                             return@runCatching
                         }
                         
@@ -175,7 +177,13 @@ fun CameraPreview(
                                 .build()
                         }
 
-                        val detector = FaceDetection.getClient(detectorOptions)
+                        val detector = try {
+                            FaceDetection.getClient(detectorOptions)
+                        } catch (error: Exception) {
+                            Log.e(TAG, "Face detector initialization failed", error)
+                            reportFailure(CameraSensorHealth.MODEL_INITIALIZATION_FAILED)
+                            return@runCatching
+                        }
                         val yoloDetector = YOLOv8Detector(ctx.applicationContext)
                         val yoloExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
                         cleanupCallbacks += {
@@ -194,8 +202,15 @@ fun CameraPreview(
                         var frameCounter = 0
 
                         imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                            if (released) {
+                                imageProxy.close()
+                                return@setAnalyzer
+                            }
+                            var detectorOwnsFrame = false
+                            try {
                             val mediaImage = imageProxy.image
                             if (mediaImage == null) {
+                                reportFailure(CameraSensorHealth.FRAME_UNAVAILABLE, null)
                                 imageProxy.close()
                                 return@setAnalyzer
                             }
@@ -208,29 +223,68 @@ fun CameraPreview(
                                 biometricTrace("BIOMETRIC_ANALYSIS_FRAME", "rotation=${imageProxy.imageInfo.rotationDegrees}")
                             }
 
+                            val nowForSnapshot = System.currentTimeMillis()
+                            if (
+                                !released &&
+                                nowForSnapshot - lastSnapshotAt >= 2000L &&
+                                snapshotEncoding.compareAndSet(false, true)
+                            ) {
+                                lastSnapshotAt = nowForSnapshot
+                                val evidenceBitmap = runCatching { imageProxy.toEvidenceBitmap() }
+                                    .onFailure { Log.e(TAG, "Evidence frame conversion failed", it) }
+                                    .getOrNull()
+
+                                if (evidenceBitmap != null && evidenceBitmap.width > 1 && evidenceBitmap.height > 1) {
+                                    Thread {
+                                        try {
+                                            val dataUrl = evidenceBitmap.toSmallJpegDataUrl()
+                                            val descriptor = faceEmbeddingModel.embed(evidenceBitmap)
+                                            if (dataUrl.isNotBlank()) {
+                                                mainHandler.post {
+                                                    if (!released) {
+                                                        onPreviewSnapshot(dataUrl)
+                                                        descriptor?.let(onFaceDescriptorChanged)
+                                                    }
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Snapshot processing failed", e)
+                                        } finally {
+                                            runCatching { evidenceBitmap.recycle() }
+                                            snapshotEncoding.set(false)
+                                        }
+                                    }.start()
+                                } else {
+                                    snapshotEncoding.set(false)
+                                }
+                            }
+
                             // 1. Run face detection on YUV ImageProxy
                             val faceTask = detector.process(image)
                                 .addOnSuccessListener { faces ->
+                                    if (released) return@addOnSuccessListener
+                                    val recovered = separateSensorFailures && lastHealth != CameraSensorHealth.HEALTHY
+                                    reportHealth(CameraSensorHealth.HEALTHY)
                                     val status = resolveFaceStatus(faces)
-                                    if (status != lastStatus) {
+                                    if (status != lastStatus || recovered) {
                                         lastStatus = status
                                         postStatus(status)
                                     }
                                     faces.firstOrNull()?.let { face ->
                                         biometricTrace("BIOMETRIC_FACE_DETECTED", "faceCount=${faces.size}")
-                                        mainHandler.post { onFaceDetected(face) }
+                                        mainHandler.post { if (!released) onFaceDetected(face) }
                                         if (!faceEmbeddingModel.isAvailable) {
-                                            face.toDescriptor(image.width, image.height)
-                                                .let { descriptor ->
-                                                    mainHandler.post { onFaceDescriptorChanged(descriptor) }
-                                                }
+                                            val descriptor = face.toDescriptor(image.width, image.height)
+                                            mainHandler.post { if (!released) onFaceDescriptorChanged(descriptor) }
                                         }
                                     }
                                 }
                                 .addOnFailureListener { error ->
                                     Log.e(TAG, "Face detection failed", error)
-                                    postStatus(FaceStatus.NO_FACE)
+                                    if (!released) reportFailure(CameraSensorHealth.ANALYZER_FAILED)
                                 }
+                            faceTask.addOnCompleteListener { imageProxy.close() }
+                            detectorOwnsFrame = true
 
                             // 2. Run YOLOv8 object detection on RGB preview bitmap (every 10 frames)
                             val currentFrame = frameCounter++
@@ -241,6 +295,7 @@ fun CameraPreview(
                                         try {
                                             val detections = yoloDetector.detect(bitmap)
                                             mainHandler.post {
+                                                if (released) return@post
                                                 detectedObjects = detections
                                                 onObjectsDetected(detections)
                                                 if (detections.isNotEmpty()) {
@@ -264,7 +319,11 @@ fun CameraPreview(
                                 }
                             }
 
-                            faceTask.addOnCompleteListener { imageProxy.close() }
+                            } catch (error: Exception) {
+                                if (!detectorOwnsFrame) imageProxy.close()
+                                Log.e(TAG, "Camera analyzer failed", error)
+                                reportFailure(CameraSensorHealth.ANALYZER_FAILED)
+                            }
                         }
 
                         biometricTrace("BIOMETRIC_CAMERA_BIND_START", "lensFacing=front lifecycle=${lifecycleOwner.lifecycle.currentState}")
@@ -277,13 +336,16 @@ fun CameraPreview(
                         biometricTrace("BIOMETRIC_CAMERA_BIND_SUCCESS", "lensFacing=front")
                         camera.cameraInfo.cameraState.observe(lifecycleOwner) { state ->
                             biometricTrace("BIOMETRIC_CAMERA_STATE", "state=${state.type}")
+                            if (!released && (state.error != null || state.type in setOf(CameraState.Type.CLOSED, CameraState.Type.CLOSING, CameraState.Type.PENDING_OPEN))) {
+                                reportFailure(CameraSensorHealth.TEMPORARILY_UNAVAILABLE, null)
+                            }
                         }
                         cleanupCallbacks += { cameraProvider.unbind(preview, imageAnalysis) }
                     }.onFailure { error ->
                         biometricTrace("BIOMETRIC_CAMERA_BIND_FAILED", "exception=${error::class.java.simpleName}")
                         Log.e(TAG, "Biometric front camera setup failed", error)
                         onCameraError("Front camera could not start. Please retry biometric verification.")
-                        postStatus(FaceStatus.NO_FACE)
+                        reportFailure(CameraSensorHealth.CAMERA_INITIALIZATION_FAILED)
                     }
                 }, mainExecutor)
 
@@ -344,6 +406,88 @@ private fun resolveFaceStatus(faces: List<Face>): FaceStatus {
                 face.headEulerAngleY > 28f || face.headEulerAngleY < -28f ||
                     face.headEulerAngleZ > 22f || face.headEulerAngleZ < -22f -> FaceStatus.LOOKING_AWAY
                 else -> FaceStatus.FACE_FOUND
+            }
+        }
+    }
+}
+
+private fun ImageProxy.toEvidenceBitmap(): Bitmap? {
+    if (width <= 0 || height <= 0 || planes.size < 3) return null
+
+    val nv21 = toNv21ByteArray()
+    val jpegBytes = ByteArrayOutputStream().use { output ->
+        val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+        val compressed = yuvImage.compressToJpeg(Rect(0, 0, width, height), 85, output)
+        if (!compressed || output.size() <= 0) return null
+        output.toByteArray()
+    }
+
+    val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return null
+    val rotationDegrees = imageInfo.rotationDegrees
+    if (rotationDegrees == 0) return bitmap
+
+    val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
+    return try {
+        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    } finally {
+        bitmap.recycle()
+    }
+}
+
+private fun ImageProxy.toNv21ByteArray(): ByteArray {
+    val yPlane = planes[0]
+    val uPlane = planes[1]
+    val vPlane = planes[2]
+    val ySize = width * height
+    val uvSize = width * height / 4
+    val nv21 = ByteArray(ySize + uvSize * 2)
+
+    copyPlaneToByteArray(
+        plane = yPlane,
+        imageWidth = width,
+        imageHeight = height,
+        output = nv21,
+        outputOffset = 0,
+        outputPixelStride = 1
+    )
+    copyPlaneToByteArray(
+        plane = vPlane,
+        imageWidth = width / 2,
+        imageHeight = height / 2,
+        output = nv21,
+        outputOffset = ySize,
+        outputPixelStride = 2
+    )
+    copyPlaneToByteArray(
+        plane = uPlane,
+        imageWidth = width / 2,
+        imageHeight = height / 2,
+        output = nv21,
+        outputOffset = ySize + 1,
+        outputPixelStride = 2
+    )
+
+    return nv21
+}
+
+private fun copyPlaneToByteArray(
+    plane: ImageProxy.PlaneProxy,
+    imageWidth: Int,
+    imageHeight: Int,
+    output: ByteArray,
+    outputOffset: Int,
+    outputPixelStride: Int
+) {
+    val buffer = plane.buffer.duplicate()
+    val rowStride = plane.rowStride
+    val pixelStride = plane.pixelStride
+
+    for (row in 0 until imageHeight) {
+        for (col in 0 until imageWidth) {
+            val bufferIndex = row * rowStride + col * pixelStride
+            val outputIndex = outputOffset + row * imageWidth * outputPixelStride + col * outputPixelStride
+            if (bufferIndex < buffer.limit() && outputIndex < output.size) {
+                output[outputIndex] = buffer.get(bufferIndex)
             }
         }
     }
