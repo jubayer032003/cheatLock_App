@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+# Exact, intentionally fake values used by the offline phase-three tests.
+# Retain every default detector and scan all files, including test sources.
+[allowlist]
+description = "Offline Self Exam test fixture values"
+regexTarget = "secret"
+regexes = ['''^synthetic-phase3-(jwt-)?key$''']
