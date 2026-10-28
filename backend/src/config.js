@@ -116,7 +116,7 @@ export function resolveAllowedOrigins({
 } = {}) {
   const isProduction = nodeEnv === "production";
   const rawEntries = [
-    clientOrigin,
+    ...(String(clientOrigin || "").trim() ? [clientOrigin] : []),
     ...String(allowedOrigins || "").split(","),
   ];
   const configured = [];
@@ -129,17 +129,18 @@ export function resolveAllowedOrigins({
       continue;
     }
     if (entry === "*") {
-      if (isProduction) {
-        throw new Error("Wildcard CORS origins are not allowed in production.");
-      }
+      // Discard legacy wildcards only when concrete production origins exist.
       configured.push("*");
       continue;
     }
     configured.push(normalizeOrigin(entry));
   }
 
-  const origins = [...new Set(isProduction ? configured : [...configured, ...DEVELOPMENT_CORS_ORIGINS])];
+  const origins = [...new Set(isProduction ? configured.filter(origin => origin !== "*") : [...configured, ...DEVELOPMENT_CORS_ORIGINS])];
   if (isProduction && origins.length === 0) {
+    if (configured.includes("*")) {
+      throw new Error("Wildcard CORS origins are not allowed in production. Set CLIENT_ORIGIN or ALLOWED_ORIGINS to your dashboard HTTPS origins.");
+    }
     throw new Error("Production CORS requires ALLOWED_ORIGINS or CLIENT_ORIGIN.");
   }
   return origins;
